@@ -7,6 +7,7 @@ class OnlineTrainer:
     def __init__(self, config, replay_buffer, logger, logdir, train_envs, eval_envs):
         self.replay_buffer = replay_buffer
         self.logger = logger
+        self.logdir = logdir
         self.train_envs = train_envs
         self.eval_envs = eval_envs
         self.steps = int(config.steps)
@@ -22,7 +23,28 @@ class OnlineTrainer:
         self._should_pretrain = tools.Once()
         self._should_log = tools.Every(config.update_log_every)
         self._should_eval = tools.Every(self.eval_every)
+        self._should_save = tools.Every(int(config.save_every))
+        self._save_buffer = bool(config.save_buffer)
         self._action_repeat = config.action_repeat
+
+    def save(self, agent, step):
+        """Write a checkpoint this run can be resumed from.
+
+        Written to a temporary file and renamed, so a session killed mid-save
+        (the common case on hosted notebooks) keeps the previous checkpoint.
+        """
+        items = {
+            "step": step,
+            "agent_state_dict": agent.state_dict(),
+            "optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
+            "scheduler_state_dict": agent._scheduler.state_dict(),
+            "scaler_state_dict": agent._scaler.state_dict(),
+        }
+        tmp = self.logdir / "latest.pt.tmp"
+        torch.save(items, tmp)
+        tmp.replace(self.logdir / "latest.pt")
+        if self._save_buffer:
+            self.replay_buffer.save(self.logdir / "replay")
 
     def eval(self, agent, train_step):
         """Run evaluation episodes.
@@ -97,7 +119,7 @@ class OnlineTrainer:
         self.logger.write(train_step)
         agent.train()
 
-    def begin(self, agent):
+    def begin(self, agent, start_step=None):
         """Main online training loop.
 
         For CPU-based environments the loop overlaps CPU stepping and GPU
@@ -107,7 +129,9 @@ class OnlineTrainer:
         """
         envs = self.train_envs
         video_cache = []
-        step = self.replay_buffer.count() * self._action_repeat
+        # A resumed run carries its own step: once the buffer is full its size
+        # no longer tracks how many env steps have been taken.
+        step = self.replay_buffer.count() * self._action_repeat if start_step is None else start_step
         update_count = 0
         # (B,)
         done = torch.ones(envs.env_num, dtype=torch.bool, device=agent.device)
@@ -189,3 +213,5 @@ class OnlineTrainer:
                         for name, param in agent._named_params.items():
                             self.logger.histogram(name, tools.to_np(param))
                     self.logger.write(step, fps=True)
+            if self._should_save(step):
+                self.save(agent, step)

@@ -42,6 +42,8 @@ include = ["envs*", "optim*"]
 # practical effect when the isaaclab extra pulls in isaacsim-core, which
 # hard-pins torch==2.7.0, packaging==23.0, and pywin32 unconditionally.
 override-dependencies = [
+    # isaacsim-core also hard-pins gymnasium==1.2.0, which cookie-env cannot use.
+    "gymnasium==1.2.1",
     "packaging>=25.0,<26.0",
     "torch==2.8.0",
     "pywin32==306; sys_platform == 'win32'",

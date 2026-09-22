@@ -49,13 +49,25 @@ def main(config):
     ).to(config.device)
 
     policy_trainer = OnlineTrainer(config.trainer, replay_buffer, logger, logdir, train_envs, eval_envs)
-    policy_trainer.begin(agent)
 
-    items_to_save = {
-        "agent_state_dict": agent.state_dict(),
-        "optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
-    }
-    torch.save(items_to_save, logdir / "latest.pt")
+    # Pointing a new run at a logdir that already holds a checkpoint continues
+    # it, so a session cut short can be picked up where it stopped.
+    start_step = None
+    checkpoint = logdir / "latest.pt"
+    if config.resume and checkpoint.exists():
+        items = torch.load(checkpoint, map_location=config.device, weights_only=False)
+        agent.load_state_dict(items["agent_state_dict"])
+        tools.recursively_load_optim_state_dict(agent, items["optims_state_dict"])
+        agent._scheduler.load_state_dict(items["scheduler_state_dict"])
+        agent._scaler.load_state_dict(items["scaler_state_dict"])
+        replay = logdir / "replay"
+        if replay.exists():
+            replay_buffer.load(replay)
+        start_step = int(items["step"])
+        print(f"Resuming from {checkpoint} at step {start_step} with {replay_buffer.count()} transitions.")
+
+    policy_trainer.begin(agent, start_step)
+    policy_trainer.save(agent, policy_trainer.steps)
 
 
 if __name__ == "__main__":

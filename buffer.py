@@ -53,6 +53,12 @@ class Buffer:
         n = index[0].shape[0]
         self._buffer[index[1], index[0]] = TensorDict({"stoch": stoch, "deter": deter}, batch_size=(n,))
 
+    def save(self, path):
+        self._buffer.dumps(path)
+
+    def load(self, path):
+        self._buffer.loads(path)
+
     def count(self):
         if self._buffer.storage.shape is None:
             return 0

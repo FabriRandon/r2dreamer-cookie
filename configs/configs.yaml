@@ -8,6 +8,8 @@ defaults:
 logdir: logdir/${now:%Y-%m-%d}/${now:%H-%M-%S}
 seed: 0
 deterministic_run: False
+# Continue from the checkpoint in logdir when there is one.
+resume: True
 device: 'cuda:0'
 
 hydra:
@@ -36,3 +38,7 @@ trainer:
   params_hist_log: False
   update_log_every: 5e3
   action_repeat: ${env.action_repeat}
+  save_every: 1e4
+  # The replay buffer is most of the checkpoint on disk. Dropping it makes
+  # a resumed run start collecting data from scratch.
+  save_buffer: True

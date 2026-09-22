@@ -45,14 +45,12 @@ class Cookie(gym.Env):
 
     @property
     def observation_space(self):
-        return gym.spaces.Dict(
-            {
-                "image": gym.spaces.Box(0, 255, self._size + (3,), np.uint8),
-                "is_first": gym.spaces.Box(0, 1, (), dtype=bool),
-                "is_last": gym.spaces.Box(0, 1, (), dtype=bool),
-                "is_terminal": gym.spaces.Box(0, 1, (), dtype=bool),
-            }
-        )
+        return gym.spaces.Dict({
+            "image": gym.spaces.Box(0, 255, self._size + (3,), np.uint8),
+            "is_first": gym.spaces.Box(0, 1, (), dtype=bool),
+            "is_last": gym.spaces.Box(0, 1, (), dtype=bool),
+            "is_terminal": gym.spaces.Box(0, 1, (), dtype=bool),
+        })
 
     @property
     def action_space(self):
