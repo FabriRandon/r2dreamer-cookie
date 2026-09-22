@@ -1,0 +1,19 @@
+task: cookie_partial
+steps: 1.01e6
+env_num: 1
+eval_episode_num: 10
+action_repeat: 1
+train_ratio: 512
+# MiniGrid's own default for this grid: 4 * height * width.
+time_limit: 2088
+
+seed: ${seed}
+device: ${device}
+
+size: [64, 64]
+encoder:
+  mlp_keys: '$^'
+  cnn_keys: 'image'
+decoder:
+  mlp_keys: '$^'
+  cnn_keys: 'image'
