@@ -42,3 +42,6 @@ trainer:
   # The replay buffer is most of the checkpoint on disk. Dropping it makes
   # a resumed run start collecting data from scratch.
   save_buffer: True
+  # Collect data with uniformly random actions instead of the actor, to
+  # study the world model learned from undirected experience.
+  random_policy: False

@@ -26,6 +26,7 @@ class OnlineTrainer:
         self._should_save = tools.Every(int(config.save_every))
         self._save_buffer = bool(config.save_buffer)
         self._action_repeat = config.action_repeat
+        self._random_policy = bool(config.random_policy)
 
     def save(self, agent, step):
         """Write a checkpoint this run can be resumed from.
@@ -178,6 +179,11 @@ class OnlineTrainer:
             # "agent_state" is reset by the agent based on the "is_first" flag in trans.
             # (B, A)
             act, agent_state = agent.act(trans.clone(), agent_state, eval=False)
+            if self._random_policy:
+                # agent.act still tracks the latent state, but the action fed
+                # back into it must be the one actually taken.
+                act = agent.random_action(envs.env_num)
+                agent_state["prev_action"] = act
 
             # Store transition.
             # We keep the observation and the action that produced it together.

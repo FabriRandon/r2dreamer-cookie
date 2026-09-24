@@ -7,6 +7,8 @@ compile: True
 log_grads: False
 device: ${device}
 rep_loss: "r2dreamer" # r2dreamer/dreamer/infonce/dreamerpro
+# Off when the actor does not collect the data (trainer.random_policy).
+train_actor_critic: True
 
 lr: 4e-5
 agc: 0.3

@@ -29,6 +29,7 @@ class Dreamer(nn.Module):
         self.return_ema = networks.ReturnEMA(device=self.device)
         self.act_dim = act_space.n if hasattr(act_space, "n") else sum(act_space.shape)
         self.rep_loss = str(config.rep_loss)
+        self.train_actor_critic = bool(config.train_actor_critic)
 
         # World model components
         shapes = {k: tuple(v.shape) for k, v in obs_space.spaces.items()}
@@ -44,7 +45,8 @@ class Dreamer(nn.Module):
 
         config.actor.shape = (act_space.n,) if hasattr(act_space, "n") else tuple(map(int, act_space.shape))
         self.act_discrete = False
-        if hasattr(act_space, "multi_discrete"):
+        self.act_multi_discrete = hasattr(act_space, "multi_discrete")
+        if self.act_multi_discrete:
             config.actor.dist = config.actor.dist.multi_disc
             self.act_discrete = True
         elif hasattr(act_space, "discrete"):
@@ -273,6 +275,13 @@ class Dreamer(nn.Module):
         action = torch.zeros(B, self.act_dim, dtype=torch.float32, device=self.device)
         return TensorDict({"stoch": stoch, "deter": deter, "prev_action": action}, batch_size=(B,))
 
+    def random_action(self, B):
+        """Uniformly random one-hot actions, for collecting data without the actor."""
+        if not self.act_discrete or self.act_multi_discrete:
+            raise NotImplementedError("random_action only supports a single discrete action space.")
+        index = torch.randint(self.act_dim, (B,), device=self.device)
+        return F.one_hot(index, self.act_dim).to(torch.float32)
+
     @torch.no_grad()
     def video_pred(self, data, initial):
         torch.compiler.cudagraph_mark_step_begin()
@@ -434,6 +443,21 @@ class Dreamer(nn.Module):
         metrics["dyn_entropy"] = torch.mean(self.rssm.get_dist(prior_logit).entropy())
         metrics["rep_entropy"] = torch.mean(self.rssm.get_dist(post_logit).entropy())
 
+        # A world model trained on data it did not choose has no use for the
+        # actor and critic, and skipping them keeps their gradients out of it.
+        if self.train_actor_critic:
+            self._actor_critic_loss(data, post_stoch, post_deter, losses, metrics)
+
+        total_loss = sum([v * self._loss_scales[k] for k, v in losses.items()])
+        self._scaler.scale(total_loss).backward()
+
+        metrics.update({f"loss/{name}": loss for name, loss in losses.items()})
+        metrics.update({"opt/loss": total_loss})
+        return (post_stoch, post_deter), metrics
+
+    def _actor_critic_loss(self, data, post_stoch, post_deter, losses, metrics):
+        """Add the imagination and replay-based actor-critic losses."""
+        B, T = data.shape
         # === Imagination rollout for actor-critic ===
         # (B*T, S, K), (B*T, D)
         start = (
@@ -521,13 +545,6 @@ class Dreamer(nn.Module):
         metrics.update(tools.tensorstats(ret, "ret_replay"))
         metrics.update(tools.tensorstats(value, "value_replay"))
         metrics.update(tools.tensorstats(slow_value, "slow_value_replay"))
-
-        total_loss = sum([v * self._loss_scales[k] for k, v in losses.items()])
-        self._scaler.scale(total_loss).backward()
-
-        metrics.update({f"loss/{name}": loss for name, loss in losses.items()})
-        metrics.update({"opt/loss": total_loss})
-        return (post_stoch, post_deter), metrics
 
     @torch.no_grad()
     def _imagine(self, start, imag_horizon):
