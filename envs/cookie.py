@@ -2,6 +2,10 @@ import gymnasium as gym
 import numpy as np
 from PIL import Image
 
+# MiniGrid's action indices for moving forward and for toggling the object in
+# front of the agent.
+FORWARD, TOGGLE = 2, 5
+
 # Variants of the cookie domain (cookie_env.envs.ThreeRooms), mirroring the
 # ones used in the JAX DreamerV3 study this fork replicates. "full" shows the
 # whole grid; the others expose only the 3x3 patch in front of the agent, which
@@ -18,8 +22,9 @@ VARIANTS = {
 class Cookie(gym.Env):
     metadata = {}
 
-    def __init__(self, task, size=(64, 64), seed=0):
+    def __init__(self, task, size=(64, 64), seed=0, press_on_move=True):
         from cookie_env.envs import ThreeRooms
+        from cookie_env.objects import Button
         from cookie_env.utils import spawner
         from minigrid.wrappers import RGBImgObsWrapper, RGBImgPartialObsWrapper
 
@@ -39,6 +44,11 @@ class Cookie(gym.Env):
         env = ThreeRooms(render_mode="rgb_array", max_steps=None, **options)
         # MiniGrid observations are symbolic; the world model wants images.
         self._env = (RGBImgObsWrapper if full_obs else RGBImgPartialObsWrapper)(env)
+        # With press_on_move the agent only turns and moves, and moving into
+        # the button presses it, so it no longer needs the other four MiniGrid
+        # actions, which a random policy mostly wastes steps on.
+        self._press_on_move = press_on_move
+        self._button = Button
         self._size = tuple(size)
         self._seed = seed
         self._seeded = False
@@ -54,9 +64,15 @@ class Cookie(gym.Env):
 
     @property
     def action_space(self):
+        if self._press_on_move:
+            return gym.spaces.Discrete(3)
         return gym.spaces.Discrete(self._env.action_space.n)
 
     def step(self, action):
+        if self._press_on_move and action == FORWARD:
+            env = self._env.unwrapped
+            if isinstance(env.grid.get(*env.front_pos), self._button):
+                action = TOGGLE
         obs, reward, terminated, truncated, info = self._env.step(action)
         done = terminated or truncated
         obs = {

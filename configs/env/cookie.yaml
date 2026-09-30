@@ -6,6 +6,8 @@ action_repeat: 1
 train_ratio: 512
 # MiniGrid's own default for this grid: 4 * height * width.
 time_limit: 2088
+# Only turn and move; moving into the button presses it.
+press_on_move: True
 
 seed: ${seed}
 device: ${device}

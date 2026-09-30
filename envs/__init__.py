@@ -93,7 +93,7 @@ def make_env(config, id):
     elif suite == "cookie":
         import envs.cookie as cookie
 
-        env = cookie.Cookie(task, config.size, seed=config.seed + id)
+        env = cookie.Cookie(task, config.size, seed=config.seed + id, press_on_move=config.press_on_move)
         env = wrappers.OneHotAction(env)
     elif suite == "metaworld":
         import envs.metaworld as metaworld
