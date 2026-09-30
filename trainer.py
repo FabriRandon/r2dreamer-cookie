@@ -1,4 +1,7 @@
+import sys
+
 import torch
+from tqdm import tqdm
 
 import tools
 
@@ -55,7 +58,7 @@ class OnlineTrainer:
         environments (``IsaacLabVecEnv``), no device transfer is needed —
         ``.to()`` is a no-op when source and target devices match.
         """
-        print("Evaluating the policy...")
+        tqdm.write("Evaluating the policy...")
         envs = self.eval_envs
         agent.eval()
         # (B,)
@@ -145,10 +148,26 @@ class OnlineTrainer:
         agent_state = agent.get_initial_state(envs.env_num)
         # (B, A)
         act = agent_state["prev_action"].clone()
+        # smoothing=0 bases the remaining time on the average speed of the
+        # whole run, evaluations included, rather than on the last few steps.
+        # The bar is hidden when output goes to a file instead of a terminal or
+        # notebook. train.py mirrors sys.stderr to a log file, so it is the
+        # original stream that tells whether there is a terminal.
+        progress = tqdm(
+            total=self.steps,
+            initial=step,
+            unit="step",
+            smoothing=0,
+            mininterval=2,
+            ncols=100,
+            disable=not sys.__stderr__.isatty(),
+        )
         while step < self.steps:
             # Evaluation
             if self._should_eval(step) and self.eval_episode_num > 0 and self.eval_envs is not None:
+                progress.set_postfix_str("evaluating")
                 self.eval(agent, step)
+                progress.set_postfix_str("")
             # Save metrics
             if done.any():
                 for i, d in enumerate(done):
@@ -161,7 +180,9 @@ class OnlineTrainer:
                         self.logger.scalar("episode/length", lengths[i])
                         self.logger.write(step + i)  # to show all values on tensorboard
                         returns[i] = lengths[i] = 0
-            step += int((~done).sum()) * self._action_repeat  # step is based on env side
+            new_steps = int((~done).sum()) * self._action_repeat
+            step += new_steps  # step is based on env side
+            progress.update(new_steps)
             lengths += ~done
 
             # Step environments.  Each env backend handles device placement
@@ -221,3 +242,4 @@ class OnlineTrainer:
                     self.logger.write(step, fps=True)
             if self._should_save(step):
                 self.save(agent, step)
+        progress.close()

@@ -10,6 +10,7 @@ import torch
 from torch import nn
 from torch.nn import init as nn_init
 from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
 
 
 class Tee(io.TextIOBase):
@@ -181,7 +182,8 @@ class Logger:
         scalars = list(self._scalars.items())
         if fps:
             scalars.append(("fps/fps", self._compute_fps(step)))
-        print(f"[{step}]", " / ".join(f"{k} {v:.1f}" for k, v in scalars))
+        # tqdm.write keeps these lines from breaking the training progress bar.
+        tqdm.write(f"[{step}] " + " / ".join(f"{k} {v:.1f}" for k, v in scalars))
         with (self._logdir / self._filename).open("a") as f:
             f.write(json.dumps({"step": step, **dict(scalars)}) + "\n")
         for name, value in scalars:
