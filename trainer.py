@@ -1,4 +1,6 @@
+import datetime
 import sys
+import time
 
 import torch
 from tqdm import tqdm
@@ -30,6 +32,7 @@ class OnlineTrainer:
         self._save_buffer = bool(config.save_buffer)
         self._action_repeat = config.action_repeat
         self._random_policy = bool(config.random_policy)
+        self._progress_start = self._progress_start_step = self._progress_last = None
 
     def save(self, agent, step):
         """Write a checkpoint this run can be resumed from.
@@ -123,6 +126,24 @@ class OnlineTrainer:
         self.logger.write(train_step)
         agent.train()
 
+    def _report_progress(self, step, every=120):
+        """Print how far the run is and how long it has left, every few minutes."""
+        now = time.time()
+        if self._progress_start is None:
+            self._progress_start, self._progress_start_step, self._progress_last = now, step, now
+            return
+        if now - self._progress_last < every or step <= self._progress_start_step:
+            return
+        self._progress_last = now
+        elapsed = now - self._progress_start
+        speed = (step - self._progress_start_step) / elapsed
+        left = (self.steps - step) / speed
+        tqdm.write(
+            f"[{step}] progress {100 * step / self.steps:.1f}% of {self.steps}"
+            f" / elapsed {datetime.timedelta(seconds=int(elapsed))}"
+            f" / left ~{datetime.timedelta(seconds=int(left))} / {speed:.1f} steps/s"
+        )
+
     def begin(self, agent, start_step=None):
         """Main online training loop.
 
@@ -150,8 +171,9 @@ class OnlineTrainer:
         act = agent_state["prev_action"].clone()
         # smoothing=0 bases the remaining time on the average speed of the
         # whole run, evaluations included, rather than on the last few steps.
-        # The bar is hidden when output goes to a file instead of a terminal or
-        # notebook. train.py mirrors sys.stderr to a log file, so it is the
+        # The bar only shows in a terminal: Colab's "!" commands and output
+        # redirected to a file get a plain progress line every few minutes
+        # instead. train.py mirrors sys.stderr to a log file, so it is the
         # original stream that tells whether there is a terminal.
         progress = tqdm(
             total=self.steps,
@@ -183,6 +205,8 @@ class OnlineTrainer:
             new_steps = int((~done).sum()) * self._action_repeat
             step += new_steps  # step is based on env side
             progress.update(new_steps)
+            if progress.disable:
+                self._report_progress(step)
             lengths += ~done
 
             # Step environments.  Each env backend handles device placement
