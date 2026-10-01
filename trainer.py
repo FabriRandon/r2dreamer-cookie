@@ -171,9 +171,9 @@ class OnlineTrainer:
         act = agent_state["prev_action"].clone()
         # smoothing=0 bases the remaining time on the average speed of the
         # whole run, evaluations included, rather than on the last few steps.
-        # The bar only shows in a terminal: Colab's "!" commands and output
-        # redirected to a file get a plain progress line every few minutes
-        # instead. train.py mirrors sys.stderr to a log file, so it is the
+        # The bar only shows in a terminal. A plain progress line is printed
+        # every few minutes as well, since Colab's "!" commands may not draw
+        # the bar. train.py mirrors sys.stderr to a log file, so it is the
         # original stream that tells whether there is a terminal.
         progress = tqdm(
             total=self.steps,
@@ -205,8 +205,7 @@ class OnlineTrainer:
             new_steps = int((~done).sum()) * self._action_repeat
             step += new_steps  # step is based on env side
             progress.update(new_steps)
-            if progress.disable:
-                self._report_progress(step)
+            self._report_progress(step)
             lengths += ~done
 
             # Step environments.  Each env backend handles device placement

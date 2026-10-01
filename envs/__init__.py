@@ -1,6 +1,14 @@
 import atexit
+import os
 
 from . import parallel, wrappers
+
+# Both cookie-env (to load the cookie's picture) and moviepy (when TensorBoard
+# writes a video) start pygame. Without these it tries to open a sound card and
+# a display, which hosted notebooks lack, and fills the output with ALSA
+# errors. Set here so they reach the main process and the env workers alike.
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 
 def make_envs(config):

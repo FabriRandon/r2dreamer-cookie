@@ -1,14 +1,6 @@
-import os
-
 import gymnasium as gym
 import numpy as np
 from PIL import Image
-
-# cookie-env starts pygame to load the cookie's picture. Without these pygame
-# tries to open a sound card and a display, which hosted notebooks lack, and
-# fills the output with ALSA errors.
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 # MiniGrid's action indices for moving forward and for toggling the object in
 # front of the agent.
