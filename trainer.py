@@ -1,4 +1,5 @@
 import datetime
+import shutil
 import sys
 import time
 
@@ -39,9 +40,21 @@ class OnlineTrainer:
 
         Written to a temporary file and renamed, so a session killed mid-save
         (the common case on hosted notebooks) keeps the previous checkpoint.
+        The buffer goes first: a checkpoint must never point past the data
+        saved with it, or a resumed run silently loses those transitions.
         """
+        if self._save_buffer:
+            replay, tmp, old = (self.logdir / name for name in ("replay", "replay.tmp", "replay.old"))
+            for path in (tmp, old):
+                shutil.rmtree(path, ignore_errors=True)
+            self.replay_buffer.save(tmp)
+            if replay.exists():
+                replay.rename(old)
+            tmp.rename(replay)
+            shutil.rmtree(old, ignore_errors=True)
         items = {
             "step": step,
+            "buffer_count": self.replay_buffer.count() if self._save_buffer else None,
             "agent_state_dict": agent.state_dict(),
             "optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
             "scheduler_state_dict": agent._scheduler.state_dict(),
@@ -50,8 +63,6 @@ class OnlineTrainer:
         tmp = self.logdir / "latest.pt.tmp"
         torch.save(items, tmp)
         tmp.replace(self.logdir / "latest.pt")
-        if self._save_buffer:
-            self.replay_buffer.save(self.logdir / "replay")
 
     def eval(self, agent, train_step):
         """Run evaluation episodes.

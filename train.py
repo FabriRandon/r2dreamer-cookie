@@ -20,11 +20,24 @@ torch.set_float32_matmul_precision("high")
 
 @hydra.main(version_base=None, config_path="configs", config_name="configs")
 def main(config):
-    tools.set_seed_everywhere(config.seed)
-    if config.deterministic_run:
-        tools.enable_deterministic_run()
     logdir = pathlib.Path(config.logdir).expanduser()
     logdir.mkdir(parents=True, exist_ok=True)
+
+    # Pointing a new run at a logdir that already holds a checkpoint continues
+    # it, so a session cut short can be picked up where it stopped.
+    checkpoint = logdir / "latest.pt"
+    items = None
+    if config.resume and checkpoint.exists():
+        items = torch.load(checkpoint, map_location=config.device, weights_only=False)
+    start_step = int(items["step"]) if items is not None else None
+
+    # A resumed run is reseeded with its step: the original seed would replay
+    # the episodes and random actions it already collected after the start.
+    seed = config.seed if start_step is None else config.seed + start_step
+    tools.set_seed_everywhere(seed)
+    config.env.seed = seed
+    if config.deterministic_run:
+        tools.enable_deterministic_run()
 
     # Mirror stdout/stderr to a file under logdir while keeping console output.
     console_f = tools.setup_console_log(logdir, filename="console.log")
@@ -50,12 +63,7 @@ def main(config):
 
     policy_trainer = OnlineTrainer(config.trainer, replay_buffer, logger, logdir, train_envs, eval_envs)
 
-    # Pointing a new run at a logdir that already holds a checkpoint continues
-    # it, so a session cut short can be picked up where it stopped.
-    start_step = None
-    checkpoint = logdir / "latest.pt"
-    if config.resume and checkpoint.exists():
-        items = torch.load(checkpoint, map_location=config.device, weights_only=False)
+    if items is not None:
         agent.load_state_dict(items["agent_state_dict"])
         tools.recursively_load_optim_state_dict(agent, items["optims_state_dict"])
         agent._scheduler.load_state_dict(items["scheduler_state_dict"])
@@ -63,8 +71,13 @@ def main(config):
         replay = logdir / "replay"
         if replay.exists():
             replay_buffer.load(replay)
-        start_step = int(items["step"])
         print(f"Resuming from {checkpoint} at step {start_step} with {replay_buffer.count()} transitions.")
+        expected = items.get("buffer_count")
+        if expected is not None and expected != replay_buffer.count():
+            print(
+                f"WARNING: the checkpoint was saved with {expected} transitions in the replay buffer, "
+                f"but {replay_buffer.count()} were loaded. The buffer on disk is incomplete."
+            )
 
     policy_trainer.begin(agent, start_step)
     policy_trainer.save(agent, policy_trainer.steps)
