@@ -1,3 +1,5 @@
+import random
+
 import gymnasium as gym
 import numpy as np
 from PIL import Image
@@ -86,6 +88,10 @@ class Cookie(gym.Env):
     def reset(self):
         # Gymnasium seeds through reset(), so only the first one is seeded;
         # seeding every episode would replay the same cookie layout forever.
+        if not self._seeded:
+            # cookie-env picks the cookie's corner with Python's global random,
+            # which the env worker processes would otherwise seed from the OS.
+            random.seed(self._seed)
         obs, _ = self._env.reset(seed=None if self._seeded else self._seed)
         self._seeded = True
         return {"image": self._image(obs), "is_first": True, "is_last": False, "is_terminal": False}
