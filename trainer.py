@@ -219,6 +219,8 @@ class OnlineTrainer:
         done = torch.ones(envs.env_num, dtype=torch.bool, device=agent.device)
         returns = torch.zeros(envs.env_num, dtype=torch.float32, device=agent.device)
         lengths = torch.zeros(envs.env_num, dtype=torch.int32, device=agent.device)
+        # Sums of the env's log_* signals over the current episode.
+        episode_logs = {}
         episode_ids = torch.arange(
             envs.env_num, dtype=torch.int32, device=agent.device
         )  # Kept constant so short episodes (< batch_length) remain sampable; RSSM resets via is_first.
@@ -257,6 +259,9 @@ class OnlineTrainer:
                             video_cache = []
                         self.logger.scalar("episode/score", returns[i])
                         self.logger.scalar("episode/length", lengths[i])
+                        for key, value in episode_logs.items():
+                            self.logger.scalar(f"episode/{key[4:]}", value[i])
+                            value[i] = 0
                         self.logger.write(step + i)  # to show all values on tensorboard
                         returns[i] = lengths[i] = 0
             new_steps = int((~done).sum()) * self._action_repeat
@@ -295,7 +300,14 @@ class OnlineTrainer:
             trans["episode"] = episode_ids  # Don't lift dim
             if "image" in trans:
                 video_cache.append(trans["image"][0])
-            self.replay_buffer.add_transition(trans.detach())
+            # The log_* signals are only for the episode metrics; the model
+            # never reads them, so they stay out of the replay buffer.
+            log_keys = [key for key in trans.keys() if key.startswith("log_")]
+            for key in log_keys:
+                if key not in episode_logs:
+                    episode_logs[key] = torch.zeros_like(returns)
+                episode_logs[key] += trans[key][:, 0]
+            self.replay_buffer.add_transition(trans.exclude(*log_keys).detach())
             returns += trans["reward"][:, 0]
             # Update models after enough data has accumulated. Counted in the
             # buffer rather than in steps, since a run resumed without its

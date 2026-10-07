@@ -20,6 +20,11 @@ VARIANTS = {
     "fullfixed": dict(full_obs=True, respawn=False),
 }
 
+# Per-step signals the trainer adds up over each episode and logs as
+# episode/<name>, so a run shows progress long before the agent gets cookies:
+# button presses, distinct cells visited, and steps spent in the button's room.
+LOGS = ("presses", "cells", "button_room")
+
 
 class Cookie(gym.Env):
     metadata = {}
@@ -54,6 +59,8 @@ class Cookie(gym.Env):
         self._size = tuple(size)
         self._seed = seed
         self._seeded = False
+        self._visited = set()
+        self._button_pos = None
 
     @property
     def observation_space(self):
@@ -62,6 +69,7 @@ class Cookie(gym.Env):
             "is_first": gym.spaces.Box(0, 1, (), dtype=bool),
             "is_last": gym.spaces.Box(0, 1, (), dtype=bool),
             "is_terminal": gym.spaces.Box(0, 1, (), dtype=bool),
+            **{f"log_{name}": gym.spaces.Box(-np.inf, np.inf, (1,), dtype=np.float32) for name in LOGS},
         })
 
     @property
@@ -71,17 +79,21 @@ class Cookie(gym.Env):
         return gym.spaces.Discrete(self._env.action_space.n)
 
     def step(self, action):
-        if self._press_on_move and action == FORWARD:
-            env = self._env.unwrapped
-            if isinstance(env.grid.get(*env.front_pos), self._button):
-                action = TOGGLE
+        env = self._env.unwrapped
+        facing_button = isinstance(env.grid.get(*env.front_pos), self._button)
+        if self._press_on_move and action == FORWARD and facing_button:
+            action = TOGGLE
         obs, reward, terminated, truncated, info = self._env.step(action)
         done = terminated or truncated
+        cell = tuple(int(v) for v in env.agent_pos)
+        new_cell = cell not in self._visited
+        self._visited.add(cell)
         obs = {
             "image": self._image(obs),
             "is_first": False,
             "is_last": done,
             "is_terminal": terminated,
+            **self._logs(presses=action == TOGGLE and facing_button, cells=new_cell, button_room=self._in_room(cell)),
         }
         return obs, np.float32(reward), done, info
 
@@ -94,10 +106,35 @@ class Cookie(gym.Env):
             random.seed(self._seed)
         obs, _ = self._env.reset(seed=None if self._seeded else self._seed)
         self._seeded = True
-        return {"image": self._image(obs), "is_first": True, "is_last": False, "is_terminal": False}
+        env = self._env.unwrapped
+        cell = tuple(int(v) for v in env.agent_pos)
+        self._visited = {cell}
+        self._button_pos = next(
+            ((x, y) for x in range(env.width) for y in range(env.height) if isinstance(env.grid.get(x, y), self._button)),
+            None,
+        )
+        return {
+            "image": self._image(obs),
+            "is_first": True,
+            "is_last": False,
+            "is_terminal": False,
+            # The starting cell counts as visited.
+            **self._logs(presses=False, cells=True, button_room=self._in_room(cell)),
+        }
 
     def render(self):
         return self._env.render()
+
+    def _in_room(self, cell, radius=2):
+        # ThreeRooms builds each room as the 5x5 square around its center, and
+        # the button sits at the center of its room.
+        if self._button_pos is None:
+            return False
+        return max(abs(cell[0] - self._button_pos[0]), abs(cell[1] - self._button_pos[1])) <= radius
+
+    @staticmethod
+    def _logs(**values):
+        return {f"log_{name}": np.float32(values[name]) for name in LOGS}
 
     def _image(self, obs):
         image = obs["image"]
