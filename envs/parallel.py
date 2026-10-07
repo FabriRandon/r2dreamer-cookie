@@ -2,6 +2,7 @@ import atexit
 import contextlib
 import enum
 import os
+import signal
 import sys
 import time
 import traceback
@@ -211,6 +212,10 @@ class ProcessPipeWorker:
 
     @staticmethod
     def _loop(pipe, function, initializers):
+        # A Ctrl+C in a terminal reaches every process of the run. The main
+        # process saves before quitting and closes the workers itself, so the
+        # workers must not die under it while it is still stepping them.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         try:
             callid = None
             state = None

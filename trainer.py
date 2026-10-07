@@ -1,4 +1,5 @@
 import datetime
+import json
 import shutil
 import sys
 import time
@@ -7,6 +8,19 @@ import torch
 from tqdm import tqdm
 
 import tools
+
+
+def _every_from(every, start):
+    """A tools.Every that fires at whole multiples of `every` after `start`.
+
+    tools.Every fires on its first call. Spending that call here keeps a
+    resumed session from saving the moment it starts, and keeps the saves on
+    round steps however many times the run is resumed.
+    """
+    clock = tools.Every(every)
+    if every:
+        clock(start - start % every)
+    return clock
 
 
 class OnlineTrainer:
@@ -29,21 +43,31 @@ class OnlineTrainer:
         self._should_pretrain = tools.Once()
         self._should_log = tools.Every(config.update_log_every)
         self._should_eval = tools.Every(self.eval_every)
-        self._should_save = tools.Every(int(config.save_every))
+        self._save_every = int(config.save_every)
+        self._save_buffer_every = int(config.save_buffer_every)
         self._save_buffer = bool(config.save_buffer)
+        self._stop_at = int(config.stop_at) if config.get("stop_at") is not None else None
         self._action_repeat = config.action_repeat
         self._random_policy = bool(config.random_policy)
         self._progress_start = self._progress_start_step = self._progress_last = None
+        # Set from a signal handler to stop at the end of the current step.
+        self.stop_requested = False
+        # Step and size of the replay buffer last written to disk.
+        self.buffer_saved = (None, None)
 
-    def save(self, agent, step):
+    def save(self, agent, step, buffer=True):
         """Write a checkpoint this run can be resumed from.
 
-        Written to a temporary file and renamed, so a session killed mid-save
+        Written to temporary files and renamed, so a session killed mid-save
         (the common case on hosted notebooks) keeps the previous checkpoint.
-        The buffer goes first: a checkpoint must never point past the data
-        saved with it, or a resumed run silently loses those transitions.
+        The replay buffer is most of it on disk and every save writes all of
+        it, so it can be left out and saved less often than the agent. The
+        checkpoint records when the buffer on disk was saved, so a resumed run
+        knows which stretch of data it lost.
         """
-        if self._save_buffer:
+        if buffer and self._save_buffer and self.buffer_saved[0] != step:
+            start = time.time()
+            tqdm.write(f"[{step}] Saving the replay buffer ({self.replay_buffer.count()} transitions)...")
             replay, tmp, old = (self.logdir / name for name in ("replay", "replay.tmp", "replay.old"))
             for path in (tmp, old):
                 shutil.rmtree(path, ignore_errors=True)
@@ -52,9 +76,13 @@ class OnlineTrainer:
                 replay.rename(old)
             tmp.rename(replay)
             shutil.rmtree(old, ignore_errors=True)
+            self.buffer_saved = (step, self.replay_buffer.count())
+            tqdm.write(f"[{step}] Saved the replay buffer in {datetime.timedelta(seconds=int(time.time() - start))}.")
+        buffer_step, buffer_count = self.buffer_saved
         items = {
             "step": step,
-            "buffer_count": self.replay_buffer.count() if self._save_buffer else None,
+            "buffer_step": buffer_step,
+            "buffer_count": buffer_count,
             "agent_state_dict": agent.state_dict(),
             "optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
             "scheduler_state_dict": agent._scheduler.state_dict(),
@@ -63,6 +91,17 @@ class OnlineTrainer:
         tmp = self.logdir / "latest.pt.tmp"
         torch.save(items, tmp)
         tmp.replace(self.logdir / "latest.pt")
+        # A small summary notebooks can read without loading the checkpoint.
+        status = {
+            "step": step,
+            "steps": self.steps,
+            "buffer_step": buffer_step,
+            "buffer_count": buffer_count,
+            "saved_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        tmp = self.logdir / "status.json.tmp"
+        tmp.write_text(json.dumps(status))
+        tmp.replace(self.logdir / "status.json")
 
     def eval(self, agent, train_step):
         """Run evaluation episodes.
@@ -162,6 +201,9 @@ class OnlineTrainer:
         model execution via pinned-memory async H2D transfers.  For
         GPU-resident environments (IsaacLab) no transfer is needed —
         ``.to()`` is a no-op when the data is already on the target device.
+
+        Returns the step it stopped at: the end of the run, trainer.stop_at,
+        or wherever stop_requested was set.
         """
         envs = self.train_envs
         video_cache = []
@@ -169,6 +211,9 @@ class OnlineTrainer:
         # no longer tracks how many env steps have been taken.
         step = self.replay_buffer.count() * self._action_repeat if start_step is None else start_step
         first_step = step
+        end = self.steps if self._stop_at is None else min(self.steps, self._stop_at)
+        should_save = _every_from(self._save_every, step)
+        should_save_buffer = _every_from(self._save_buffer_every, step)
         update_count = 0
         # (B,)
         done = torch.ones(envs.env_num, dtype=torch.bool, device=agent.device)
@@ -196,7 +241,7 @@ class OnlineTrainer:
             ncols=100,
             disable=not sys.__stderr__.isatty(),
         )
-        while step < self.steps:
+        while step < end and not self.stop_requested:
             # Evaluation
             if self._should_eval(step) and self.eval_episode_num > 0 and self.eval_envs is not None:
                 progress.set_postfix_str("evaluating")
@@ -252,8 +297,10 @@ class OnlineTrainer:
                 video_cache.append(trans["image"][0])
             self.replay_buffer.add_transition(trans.detach())
             returns += trans["reward"][:, 0]
-            # Update models after enough data has accumulated
-            if step // (envs.env_num * self._action_repeat) > self.batch_length + 1:
+            # Update models after enough data has accumulated. Counted in the
+            # buffer rather than in steps, since a run resumed without its
+            # buffer starts far along with no data.
+            if self.replay_buffer.count() // envs.env_num > self.batch_length + 1:
                 if self._should_pretrain():
                     update_num = self.pretrain
                 else:
@@ -275,12 +322,15 @@ class OnlineTrainer:
                         for name, param in agent._named_params.items():
                             self.logger.histogram(name, tools.to_np(param))
                     self.logger.write(step, fps=True)
-            if self._should_save(step):
-                self.save(agent, step)
+            save_buffer = should_save_buffer(step)
+            if should_save(step) or save_buffer:
+                self.save(agent, step, buffer=bool(save_buffer))
         # The loop evaluates at the start of each pass, so it stops without
         # scoring the last stretch of training. Skipped when there was nothing
-        # left to train, so rerunning a finished run does not evaluate again.
-        if step > first_step and self.eval_episode_num > 0 and self.eval_envs is not None:
+        # left to train, so rerunning a finished run does not evaluate again,
+        # and when the run stops early, which should be quick.
+        if step >= self.steps and step > first_step and self.eval_episode_num > 0 and self.eval_envs is not None:
             progress.set_postfix_str("evaluating")
             self.eval(agent, step)
         progress.close()
+        return step

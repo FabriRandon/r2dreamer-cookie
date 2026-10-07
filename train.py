@@ -1,5 +1,6 @@
 import atexit
 import pathlib
+import signal
 import sys
 import warnings
 
@@ -72,15 +73,47 @@ def main(config):
         if replay.exists():
             replay_buffer.load(replay)
         print(f"Resuming from {checkpoint} at step {start_step} with {replay_buffer.count()} transitions.")
+        # Checkpoints from before the buffer was saved on its own schedule
+        # always saved it together with the agent.
+        buffer_step = items.get("buffer_step", start_step)
         expected = items.get("buffer_count")
+        policy_trainer.buffer_saved = (buffer_step, replay_buffer.count())
         if expected is not None and expected != replay_buffer.count():
             print(
                 f"WARNING: the checkpoint was saved with {expected} transitions in the replay buffer, "
                 f"but {replay_buffer.count()} were loaded. The buffer on disk is incomplete."
             )
+        elif buffer_step is not None and buffer_step < start_step:
+            print(
+                f"The replay buffer on disk is from step {buffer_step}: the data collected between steps "
+                f"{buffer_step} and {start_step} was lost when the run stopped, and is collected again."
+            )
+        elif replay_buffer.count() == 0:
+            print("No replay buffer had been saved yet: the run goes on with an empty one and collects its data again.")
 
-    policy_trainer.begin(agent, start_step)
-    policy_trainer.save(agent, policy_trainer.steps)
+    # A first Ctrl+C or SIGTERM (what a notebook's stop button ends up sending)
+    # lets the loop finish its step and save everything before quitting; a
+    # second one quits at once. The handler only sets a flag, since printing
+    # from it could interrupt another print.
+    def request_stop(signum, frame):
+        if policy_trainer.stop_requested:
+            raise KeyboardInterrupt
+        policy_trainer.stop_requested = True
+
+    signal.signal(signal.SIGINT, request_stop)
+    signal.signal(signal.SIGTERM, request_stop)
+
+    final_step = policy_trainer.begin(agent, start_step)
+    if final_step <= (start_step or 0):
+        print(f"Nothing left to train: the run is at step {final_step} of {policy_trainer.steps}.")
+        return
+    if policy_trainer.stop_requested:
+        print(f"Stopped at step {final_step}. Saving the agent and the replay buffer, which can take a few minutes...")
+    policy_trainer.save(agent, final_step)
+    if final_step >= policy_trainer.steps:
+        print(f"Training finished at step {final_step}.")
+    else:
+        print(f"Saved at step {final_step}. Run the same command again to continue from there.")
 
 
 if __name__ == "__main__":
