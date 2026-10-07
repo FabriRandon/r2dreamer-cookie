@@ -168,6 +168,7 @@ class OnlineTrainer:
         # A resumed run carries its own step: once the buffer is full its size
         # no longer tracks how many env steps have been taken.
         step = self.replay_buffer.count() * self._action_repeat if start_step is None else start_step
+        first_step = step
         update_count = 0
         # (B,)
         done = torch.ones(envs.env_num, dtype=torch.bool, device=agent.device)
@@ -276,4 +277,10 @@ class OnlineTrainer:
                     self.logger.write(step, fps=True)
             if self._should_save(step):
                 self.save(agent, step)
+        # The loop evaluates at the start of each pass, so it stops without
+        # scoring the last stretch of training. Skipped when there was nothing
+        # left to train, so rerunning a finished run does not evaluate again.
+        if step > first_step and self.eval_episode_num > 0 and self.eval_envs is not None:
+            progress.set_postfix_str("evaluating")
+            self.eval(agent, step)
         progress.close()
