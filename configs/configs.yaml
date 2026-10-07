@@ -23,6 +23,9 @@ buffer:
   batch_size: ${batch_size}
   batch_length: ${batch_length}
   max_size: 5e5
+  # Sequences per batch drawn around a rewarded step instead of uniformly.
+  # Helps the reward model when rewards are too sparse to show up otherwise.
+  reward_slices: 0
   device: ${device}
   storage_device: ${device}
 
