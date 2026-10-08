@@ -20,6 +20,44 @@ VARIANTS = {
     "fullfixed": dict(full_obs=True, respawn=False),
 }
 
+
+
+def _shorter_hallways(hallway, fixed_corner=False):
+    """ThreeRooms with hallways of `hallway` cells instead of 11.
+
+    The three 5x5 rooms stay as they are, and the cookie still appears in an
+    outer corner of a side room, so only the distances shrink. cookie-env
+    hardcodes the corners for the 18x29 grid, which is why just shrinking the
+    grid lands the cookie in the wrong places. Returns the class and the
+    arguments to build it with.
+    """
+    from cookie_env.envs import ThreeRooms
+    from cookie_env.objects import Button
+    from minigrid.core.grid import Grid
+
+    # The hallways meet where the agent starts; the button's room sits
+    # `hallway` cells above, and the side rooms as far to each side.
+    cx = cy = hallway + 3
+    corners = [(x, y) for x in (cx - hallway - 2, cx + hallway + 2) for y in (cy - 2, cy + 2)]
+
+    class Rooms(ThreeRooms):
+        def _gen_grid(self, width, height):
+            self.grid = Grid(width, height)
+            self._fill_with_walls()
+            for x, y in ((cx - hallway, cy), (cx + hallway, cy), (cx, cy - hallway)):
+                self._generate_room(x, y)
+            self._generate_hallway(cx - hallway, cy, cx + hallway, cy)
+            self._generate_hallway(cx, cy - hallway, cx, cy)
+            self.put_obj(Button("blue", self.spawn_cookie), cx, cy - hallway)
+            self.agent_pos = self.agent_start_pos
+            self.agent_dir = self.agent_start_dir
+
+    # cookie-env picks the corner with Python's global random, like this.
+    spawner = (lambda: corners[0]) if fixed_corner else (lambda: random.choice(corners))
+    options = dict(width=2 * hallway + 7, height=hallway + 7, agent_start_pos=(cx, cy), cookie_spawner=spawner)
+    return Rooms, options
+
+
 # Per-step signals the trainer adds up over each episode and logs as
 # episode/<name>, so a run shows progress long before the agent gets cookies:
 # button presses, distinct cells visited, and steps spent in the button's room.
@@ -35,20 +73,27 @@ class Cookie(gym.Env):
         from cookie_env.utils import spawner
         from minigrid.wrappers import RGBImgObsWrapper, RGBImgPartialObsWrapper
 
-        # "partial" or "partial_18x29": the optional suffix overrides the grid.
-        variant, _, grid = task.partition("_")
+        # "partial", "partial_18x29" or "partial_hall5": the optional suffix
+        # overrides the grid, or shortens the hallways (see _shorter_hallways).
+        variant, _, suffix = task.partition("_")
         assert variant in VARIANTS, (variant, tuple(VARIANTS))
         options = dict(VARIANTS[variant])
         full_obs = options.pop("full_obs")
-        if "spawner" in options:
-            options["cookie_spawner"] = getattr(spawner, options.pop("spawner"))
-        if grid:
-            height, width = (int(side) for side in grid.split("x"))
-            options.update(height=height, width=width)
+        rooms = ThreeRooms
+        if suffix.startswith("hall"):
+            fixed_corner = options.pop("spawner", None) == "deterministic_corner"
+            rooms, layout = _shorter_hallways(int(suffix[len("hall"):]), fixed_corner)
+            options.update(layout)
+        else:
+            if "spawner" in options:
+                options["cookie_spawner"] = getattr(spawner, options.pop("spawner"))
+            if suffix:
+                height, width = (int(side) for side in suffix.split("x"))
+                options.update(height=height, width=width)
 
         # max_steps=None picks MiniGrid's 4 * height * width, the episode
         # length the JAX runs used; ThreeRooms would default to 10_000.
-        env = ThreeRooms(render_mode="rgb_array", max_steps=None, **options)
+        env = rooms(render_mode="rgb_array", max_steps=None, **options)
         # MiniGrid observations are symbolic; the world model wants images.
         self._env = (RGBImgObsWrapper if full_obs else RGBImgPartialObsWrapper)(env)
         # With press_on_move the agent only turns and moves, and moving into
