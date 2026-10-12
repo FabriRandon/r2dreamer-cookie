@@ -10,8 +10,9 @@ FORWARD, TOGGLE = 2, 5
 
 # Variants of the cookie domain (cookie_env.envs.ThreeRooms), mirroring the
 # ones used in the JAX DreamerV3 study this fork replicates. "full" shows the
-# whole grid; the others expose only the 3x3 patch in front of the agent, which
-# is the partially observable setting Dreamer struggles with.
+# whole grid; the others expose only the patch in front of the agent, which is
+# the partially observable setting Dreamer struggles with. The patch is 3x3, or
+# NxN when the task ends in "_viewN".
 VARIANTS = {
     "partial": dict(full_obs=False),
     "deterministic": dict(full_obs=False, spawner="deterministic_corner"),
@@ -75,6 +76,13 @@ class Cookie(gym.Env):
 
         # "partial", "partial_18x29" or "partial_hall5": the optional suffix
         # overrides the grid, or shortens the hallways (see _shorter_hallways).
+        # Any of them can end in "_view5" to see 5x5 cells instead of 3x3.
+        rest, _, last = task.rpartition("_")
+        view = 3
+        if last.startswith("view"):
+            task, view = rest, int(last[len("view"):])
+        # The agent sits at the middle of the view's back edge.
+        assert view % 2 == 1 and view >= 3, f"the view must be odd and at least 3, got {view}"
         variant, _, suffix = task.partition("_")
         assert variant in VARIANTS, (variant, tuple(VARIANTS))
         options = dict(VARIANTS[variant])
@@ -94,8 +102,13 @@ class Cookie(gym.Env):
         # max_steps=None picks MiniGrid's 4 * height * width, the episode
         # length the JAX runs used; ThreeRooms would default to 10_000.
         env = rooms(render_mode="rgb_array", max_steps=None, **options)
+        # ThreeRooms fixes the view at 3x3 when it builds MiniGrid, which reads
+        # it again on every step.
+        env.agent_view_size = view
+        env.observation_space["image"] = gym.spaces.Box(0, 255, (view, view, 3), np.uint8)
         # MiniGrid observations are symbolic; the world model wants images.
         self._env = (RGBImgObsWrapper if full_obs else RGBImgPartialObsWrapper)(env)
+        self._full_obs = full_obs
         # With press_on_move the agent only turns and moves, and moving into
         # the button presses it, so it no longer needs the other four MiniGrid
         # actions, which a random policy mostly wastes steps on.
@@ -168,7 +181,11 @@ class Cookie(gym.Env):
         }
 
     def render(self):
-        return self._env.render()
+        # The grid for people to watch, with the agent's view shaded. With full
+        # vision it sees the whole grid, so nothing is shaded, although the
+        # image the agent gets still has MiniGrid's shading of the view.
+        env = self._env.unwrapped
+        return env.get_frame(highlight=not self._full_obs, tile_size=env.tile_size)
 
     def _in_room(self, cell, radius=2):
         # ThreeRooms builds each room as the 5x5 square around its center, and
