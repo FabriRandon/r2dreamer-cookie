@@ -20,7 +20,8 @@ import re
 
 # Per-episode averages of a uniformly random agent with the 3 actions of
 # env.press_on_move, measured with envs/cookie.py (60 episodes of the full
-# map, 150 of the one with hallways of 5). Keyed by env.task.
+# map, 150 of the one with hallways of 5). Keyed by env.task with full vision;
+# see random_reference for the others.
 RANDOM = {
     "cookie_full": {"score": 0.02, "presses": 7.1, "cells": 51.0, "button_room": 448.0},
     "cookie_full_hall5": {"score": 0.05, "presses": 2.7, "cells": 38.0, "button_room": 155.0},
@@ -66,6 +67,13 @@ def load(logdir):
     return rows, status, task
 
 
+def random_reference(task):
+    # A random agent ignores what it sees, so with a partial view of any size
+    # it does the same as with full vision on the same map.
+    task = re.sub(r"_view\d+$", "", task or "")
+    return RANDOM.get(task.replace("cookie_partial", "cookie_full", 1), {})
+
+
 def series(rows, key):
     return [(row["step"], row[key]) for row in rows if key in row]
 
@@ -96,7 +104,7 @@ def summarize(logdir, rows, status, task, window):
             print(f"Buffer en disco: del paso {status['buffer_step']:,} ({status['buffer_count']:,} transiciones).")
     step = status["step"] if status else max((row["step"] for row in rows), default=0)
 
-    random_ref = RANDOM.get(task, {})
+    random_ref = random_reference(task)
     latest = {}
     print(f"\nÚltimas {window} partidas de entrenamiento" + (" (entre paréntesis, un agente al azar):" if random_ref else ":"))
     for key, label in EPISODE_KEYS.items():
