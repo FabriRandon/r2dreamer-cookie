@@ -3,6 +3,7 @@ import pathlib
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import patch
 
 import yaml
 
@@ -81,6 +82,25 @@ class ComparisonTests(unittest.TestCase):
         self.assertIn("repaso de éxitos", summary["Experimento"])
         self.assertIn("recompensa", summary["Qué cambia"])
 
+    def test_only_graph_uses_smoothed_training_cookies_not_evaluation(self):
+        from matplotlib.axes import Axes
+
+        path = self.run_folder("test", [{"step": 0, "episode/eval_score": 99},
+                                        {"step": 816, "episode/score": 1},
+                                        {"step": 1632, "episode/score": 3},
+                                        {"step": 2448, "episode/score": 8}])
+        curves = []
+        original = Axes.plot
+
+        def capture(ax, x, y, *args, **kwargs):
+            curves.append((list(x), list(y)))
+            return original(ax, x, y, *args, **kwargs)
+
+        with patch.object(Axes, "plot", capture):
+            report = generate_report([load_run(path)], self.root / "report", window=2)
+        self.assertEqual(curves, [([816, 1632, 2448], [1, 2, 5.5])])
+        self.assertEqual(len(report["images"]), 1)
+
     def test_common_evaluation_uses_exact_steps_and_skips_runs_without_evals(self):
         a = self.run_folder("a", [{"step": 25000, "episode/eval_score": 0},
                                   {"step": 50000, "episode/eval_score": 10}])
@@ -134,12 +154,11 @@ class ComparisonTests(unittest.TestCase):
         original = {p: p.read_bytes() for p in paths}
         report = generate_report([load_run(a), load_run(b)], self.root / "report")
         self.assertEqual(report["common_step"], 25000)
-        self.assertTrue({"evaluacion_vistas", "evaluacion_5x5", "evaluacion_por_caso", "resumen_tramo_final"}
-                        <= {path.stem for path in report["images"]})
+        self.assertEqual([path.stem for path in report["images"]], ["galletas_experimentos"])
         self.assertEqual(original, {p: p.read_bytes() for p in paths})
         with zipfile.ZipFile(report["archive"]) as archive:
             self.assertIn("resumen.csv", archive.namelist())
-            self.assertIn("evaluacion_todos.pdf", archive.namelist())
+            self.assertIn("galletas_experimentos.pdf", archive.namelist())
             manifest = json.loads(archive.read("lectura.json"))
             self.assertEqual(manifest["paso_evaluacion_comun"], 25000)
         with self.assertRaises(ValueError):

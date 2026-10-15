@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 
 import yaml
 
-from progress import random_reference, rolling
+from progress import rolling
 
 
 @dataclass
@@ -289,158 +289,28 @@ def generate_report(runs, out, window=20, last_evals=3):
                 images.append(path)
         plt.close(fig)
 
-    def format_axis(ax, title, ylabel):
-        ax.set_title(title)
-        ax.set_xlabel("Pasos del ambiente")
-        ax.set_ylabel(ylabel)
-        ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{x / 1000:g}k"))
-        ax.grid(alpha=0.25)
-        ax.set_xlim(left=0)
-
-    def draw(ax, selected, key, smooth=False, labeler=None):
-        count = 0
-        for run in selected:
-            points = run.points(key)
-            if smooth:
-                points = rolling(points, window)
-            if not points:
-                continue
-            x, y = zip(*points)
-            label = labeler(run) if labeler else run.label
-            ax.plot(x, y, color=colors[run.path], label=label,
-                    marker="o" if "eval_" in key else None,
-                    markersize=3, linewidth=1.5, linestyle="--" if run.view == "Completa" else "-")
-            count += 1
-        if not count:
-            ax.text(0.5, 0.5, "Sin datos guardados para esta métrica", ha="center", transform=ax.transAxes)
-        return count
-
-    eval_counts = {r.config.get("env", {}).get("eval_episode_num") for r in runs}
-    point_note = (f"Cada punto es la media de {next(iter(eval_counts))} partidas."
-                  if len(eval_counts) == 1 and None not in eval_counts else
-                  "Cada punto es una evaluación; la cantidad de partidas por caso figura en la tabla.")
-    seeds = {r.config.get("seed") for r in runs}
-    if len(seeds) == 1 and None not in seeds:
-        point_note += f" Semilla de entrenamiento: {next(iter(seeds))}."
-    original = [r for r in runs if number(r.config.get("buffer", {}).get("reward_slices")) == 0
-                and number(r.config.get("model", {}).get("act_entropy")) is not None
-                and math.isclose(number(r.config["model"]["act_entropy"]), 0.0003)]
-    for selected, name, title, caption, show in [
-        (runs, "evaluacion_todos", "Comparación general de los experimentos", point_note, False),
-        (original, "evaluacion_vistas", "Efecto del tamaño de la observación · configuración original",
-         "Vista local: ventana de casillas que recibe el agente. El mapa completo se incluye como referencia.\n"
-         "Todos estos casos usan muestreo al azar y el incentivo original a explorar. " + point_note, True),
-        ([r for r in runs if r.view == "5×5"], "evaluacion_5x5", "Cambios en el aprendizaje con vista local de 5×5",
-         "Repaso de éxitos: incluir secuencias que contienen una recompensa entre las experiencias de entrenamiento.\n"
-         "Más incentivo a explorar: aumentar el peso de mantener acciones variadas. " + point_note, True),
-    ]:
-        if not selected:
-            continue
-        fig, ax = plt.subplots(figsize=(12, 6.5))
-        draw(ax, selected, "episode/eval_score", labeler=lambda r: textwrap.fill(r.label, 42))
-        refs = [random_reference(r.task).get("score") for r in selected]
-        if refs and None not in refs and len(set(refs)) == 1:
-            ax.axhline(refs[0], color="gray", linestyle=":", label=f"Azar (referencia): {refs[0]:g}")
-        format_axis(ax, title, "Galletas por partida (media de la evaluación)")
-        ax.set_ylim(bottom=0)
-        if ax.get_legend_handles_labels()[0]:
-            ax.legend(loc="upper left", bbox_to_anchor=(1, 1), fontsize=10, framealpha=0.9)
-        save(fig, name, caption, show=show)
-
-    # Separate panels make zero-score cases and unequal training budgets visible.
-    columns = min(3, len(runs))
-    rows = math.ceil(len(runs) / columns)
-    fig, axes = plt.subplots(rows, columns, figsize=(5 * columns, 3.7 * rows), squeeze=False, sharex=True, sharey=True)
-    last_step = max((p[0] for r in runs for p in r.points("episode/eval_score")), default=1)
-    max_score = max((p[1] for r in runs for p in r.points("episode/eval_score")), default=1)
-    for ax, run in zip(axes.flat, runs):
-        draw(ax, [run], "episode/eval_score")
-        format_axis(ax, textwrap.fill(run.label, 33), "Galletas por partida")
-        ax.set_xlim(0, max(last_step, 1))
-        ax.set_ylim(-0.03 * max(max_score, 1), 1.18 * max(max_score, 1))
-        points = run.points("episode/eval_score")
-        note = f"Última: {points[-1][1]:g} galletas · paso {points[-1][0]:,}" if points else "Todavía sin evaluación"
-        ax.text(0.03, 0.92, note, transform=ax.transAxes, fontsize=9,
-                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.9})
-    for ax in list(axes.flat)[len(runs):]:
-        ax.set_visible(False)
-    save(fig, "evaluacion_por_caso", "Un panel por experimento, con las mismas escalas para facilitar la comparación. " + point_note)
-
-    fig, ax = plt.subplots(figsize=(12, max(4, len(runs) * 0.85)))
-    for i, (run, info) in enumerate(zip(runs, summary)):
-        points = run.points("episode/eval_score")[-last_evals:]
+    fig, ax = plt.subplots(figsize=(12, 6))
+    drawn = 0
+    for run in runs:
+        points = rolling(run.points("episode/score"), window)
         if not points:
-            ax.text(0.1, i, "Sin evaluación", va="center")
             continue
-        mean = info["Media tramo final"]
-        low, high = info["Mínimo tramo final"], info["Máximo tramo final"]
-        ax.barh(i, mean, color=colors[run.path], alpha=0.3, height=0.55)
-        ax.plot([low, high], [i, i], color=colors[run.path], linewidth=2)
-        ax.scatter([v for _, v in points], [i] * len(points), color=colors[run.path], s=30, zorder=3)
-        ax.scatter([points[-1][1]], [i], marker="D", color=colors[run.path], s=70, edgecolor="white", zorder=4)
-        ax.text(1.015, i, f"Media: {mean:.2f} · última: {points[-1][1]:g}\n"
-                f"{len(points)} evaluaciones · pasos {points[0][0] / 1000:g}k–{points[-1][0] / 1000:g}k",
-                transform=ax.get_yaxis_transform(), va="center", fontsize=9)
-    ax.set_yticks(range(len(runs)), [textwrap.fill(r.label, 35) for r in runs])
-    ax.invert_yaxis()
-    ax.set_title(f"Rendimiento reciente · hasta {last_evals} últimas evaluaciones disponibles")
-    ax.set_xlabel("Galletas por partida")
-    ax.grid(axis="x", alpha=0.25)
-    ax.set_xlim(left=-0.3)
-    ax.margins(x=0.12)
-    save(fig, "resumen_tramo_final", "Barra: media del tramo. Puntos y línea: valores y rango observados. Rombo: última evaluación.\n"
-         "El rango describe variación entre evaluaciones de una corrida; no es un intervalo de confianza. Los pasos pueden diferir entre casos.")
-
-    fig, axes = plt.subplots(1, 3, figsize=(19, 5))
-    for ax, key, title in zip(axes, ["presses", "cells", "button_room"],
-                              ["Veces que aprieta el botón", "Casillas distintas visitadas", "Pasos en el cuarto del botón"]):
-        draw(ax, runs, f"episode/{key}", smooth=True)
-        refs = [random_reference(r.task).get(key) for r in runs]
-        if refs and None not in refs and len(set(refs)) == 1:
-            ax.axhline(refs[0], color="gray", linestyle=":", label="Azar (referencia)")
-        format_axis(ax, title, f"Promedio móvil de hasta {window} partidas")
-        ax.set_ylim(bottom=0)
-    handles, labels = axes[0].get_legend_handles_labels()
-    if handles:
-        axes[-1].legend(handles, labels, loc="upper left", bbox_to_anchor=(1, 1), fontsize=8)
-    save(fig, "exploracion")
-
-    fig, axes = plt.subplots(1, 3, figsize=(19, 5))
-    for ax, key, title, ylabel in zip(
-        axes, ["episode/score", "train/rew", "train/action_entropy"],
-        ["Galletas durante entrenamiento", "Recompensa imaginada por el modelo", "Entropía del actor en imaginación"],
-        [f"Promedio móvil de hasta {window} partidas", "Media (escala symlog)", "Entropía"],
-    ):
-        draw(ax, runs, key, smooth=key.startswith("episode/"))
-        format_axis(ax, title, ylabel)
-        if key == "train/rew":
-            ax.set_yscale("symlog", linthresh=1e-4)
-        if key == "train/action_entropy":
-            ax.axhline(math.log(3), color="gray", linestyle=":", label="Azar puro (3 acciones)")
-        if key != "train/rew":
-            ax.set_ylim(bottom=0)
-    handles, labels = [], []
-    for ax in axes:
-        for handle, label in zip(*ax.get_legend_handles_labels()):
-            if label not in labels:
-                handles.append(handle)
-                labels.append(label)
-    if handles:
-        axes[-1].legend(handles, labels, loc="upper left", bbox_to_anchor=(1, 1), fontsize=8)
-    save(fig, "entrenamiento")
-
-    if common:
-        fig, ax = plt.subplots(figsize=(12, max(3.5, len(common) * 0.6)))
-        ax.barh([row["Experimento"] for row in common], [row["Galletas en evaluación"] for row in common],
-                color=[colors[run.path] for run in runs if run.points("episode/eval_score")])
-        for i, row in enumerate(common):
-            ax.annotate(f" {row['Galletas en evaluación']:g}", (row["Galletas en evaluación"], i), va="center")
-        ax.set_title(f"Evaluación al mismo paso: {common_step:,} · solo runs con evaluaciones")
-        ax.set_xlabel("Galletas por partida (media de la evaluación)")
-        ax.grid(axis="x", alpha=0.25)
-        ax.invert_yaxis()
-        ax.margins(x=0.15)
-        save(fig, "evaluacion_paso_comun")
+        steps, cookies = zip(*points)
+        ax.plot(steps, cookies, label=textwrap.fill(run.label, 42), color=colors[run.path],
+                linewidth=2, linestyle="--" if run.view == "Completa" else "-")
+        drawn += 1
+    ax.set_title("Galletas durante el entrenamiento", fontsize=16, pad=12)
+    ax.set_xlabel("Pasos del agente en el ambiente", fontsize=12)
+    ax.set_ylabel("Galletas por partida", fontsize=12)
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{x / 1000:g}k"))
+    ax.grid(alpha=0.25)
+    ax.set_xlim(left=0)
+    ax.set_ylim(bottom=0)
+    if drawn:
+        ax.legend(loc="upper left", bbox_to_anchor=(1, 1), fontsize=10)
+    else:
+        ax.text(0.5, 0.5, "Todavía no hay partidas de entrenamiento registradas", ha="center", transform=ax.transAxes)
+    save(fig, "galletas_experimentos", f"Promedio móvil de hasta {window} partidas de entrenamiento.")
 
     manifest = {"lectura_utc": stamp, "ventana_entrenamiento": window, "evaluaciones_tramo_final": last_evals,
                 "paso_evaluacion_comun": common_step,
