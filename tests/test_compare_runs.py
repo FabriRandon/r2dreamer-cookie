@@ -6,7 +6,7 @@ import zipfile
 
 import yaml
 
-from compare_runs import common_evaluations, discover, generate_report, load_run, summarize
+from compare_runs import common_evaluations, discover, find_video, generate_report, load_run, summarize
 
 
 class ComparisonTests(unittest.TestCase):
@@ -87,6 +87,25 @@ class ComparisonTests(unittest.TestCase):
         (other / "metrics.jsonl").write_text('{"step": 0}\n')
         runs = discover(self.root / "semana15", [path, other, self.root / "missing"])
         self.assertEqual({r.path for r in runs}, {path, other})
+
+    def test_videos_filter_seed_and_skip_empty_or_temporary_files(self):
+        path = self.run_folder("test", [{"step": 0}])
+        self.assertIsNone(find_video(path))
+        (path / "agente_episodio0.mp4").touch()
+        (path / "agente_episodio0.tmp.mp4").write_bytes(b"unfinished")
+        other_seed = path / "agente_episodio1.mp4"
+        other_seed.write_bytes(b"video")
+        self.assertIsNone(find_video(path, seed=0))
+        self.assertEqual(find_video(path, seed=1), other_seed)
+        self.assertEqual(find_video(path, seed=None), other_seed)
+
+    def test_video_can_come_from_report_without_modifying_run(self):
+        path = self.run_folder("test", [{"step": 0}])
+        video = self.root / "report" / "videos" / path.name / "agente_episodio0.mp4"
+        video.parent.mkdir(parents=True)
+        video.write_bytes(b"video")
+        self.assertEqual(find_video(path, self.root / "report"), video)
+        self.assertFalse((path / "agente_episodio0.mp4").exists())
 
     def test_export_is_read_only_and_archive_contains_current_snapshot(self):
         a = self.run_folder("a", [{"step": 0, "episode/eval_score": 0},

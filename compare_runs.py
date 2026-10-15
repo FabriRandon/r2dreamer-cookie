@@ -116,6 +116,27 @@ def discover(root, extras=()):
     return [load_run(p) for p in sorted(paths)]
 
 
+def find_video(run_path, report_dir=None, seed=0):
+    """Find a saved episode without opening a checkpoint or replay buffer."""
+    run_path = pathlib.Path(run_path)
+    folders = [run_path]
+    if report_dir is not None:
+        folders.append(pathlib.Path(report_dir) / "videos" / run_path.name)
+    pattern = f"agente_episodio{seed}.mp4" if seed is not None else "agente_episodio*.mp4"
+    candidates = []
+    for folder in folders:
+        for path in folder.glob(pattern):
+            if not re.fullmatch(r"agente_episodio\d+\.mp4", path.name):
+                continue
+            try:
+                info = path.stat()
+                if path.is_file() and info.st_size > 0:
+                    candidates.append((info.st_mtime_ns, str(path), path))
+            except OSError:
+                pass  # Drive may still be synchronizing the video.
+    return max(candidates)[2] if candidates else None
+
+
 def common_evaluations(runs):
     available = [(run, dict(run.points("episode/eval_score"))) for run in runs]
     available = [(run, points) for run, points in available if points]
