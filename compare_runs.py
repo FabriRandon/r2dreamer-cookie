@@ -44,7 +44,7 @@ class Run:
         entropy = number(self.config.get("model", {}).get("act_entropy"))
         label = "Mapa completo (referencia)" if self.view == "Completa" else f"Vista local {self.view}"
         if sampler:
-            label = f"{self.view} + repaso de éxitos"
+            label = f"{self.view} + repetir experiencias donde comió galletas"
             if sampler != 1:
                 label += f" ({sampler:g} secuencias)"
         if entropy is not None and not math.isclose(entropy, 0.0003):

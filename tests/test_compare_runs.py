@@ -79,7 +79,7 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(summary["Máximo tramo final"], 12)
         self.assertEqual(summary["Paso inicio tramo final"], 50000)
         self.assertEqual(summary["Evaluaciones tramo final"], 3)
-        self.assertIn("repaso de éxitos", summary["Experimento"])
+        self.assertIn("experiencias donde comió galletas", summary["Experimento"])
         self.assertIn("recompensa", summary["Qué cambia"])
 
     def test_only_graph_uses_smoothed_training_cookies_not_evaluation(self):
