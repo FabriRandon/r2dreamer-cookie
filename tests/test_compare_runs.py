@@ -141,6 +141,28 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(find_video(path, self.root / "report"), video)
         self.assertFalse((path / "agente_episodio0.mp4").exists())
 
+    def test_video_gallery_with_real_ipython_and_missing_video(self):
+        import compare_runs
+        import IPython.display
+
+        path = self.run_folder("test", [{"step": 0}])
+        (path / "agente_episodio0.mp4").write_bytes(b"video-fixture")
+        notebook = pathlib.Path(__file__).resolve().parents[1] / "notebooks/experimentos-semana-del-15/comparacion_semana.ipynb"
+        cells = json.loads(notebook.read_text())["cells"]
+        source = next("".join(c["source"]) for c in cells
+                      if c["cell_type"] == "code" and "def mostrar_videos()" in "".join(c["source"]))
+        scope = {"Path": pathlib.Path, "RAIZ": self.root / "semana15", "EXTRAS": [], "EXCLUIR": [],
+                 "ESPERADOS": {"Caso existente": path, "Caso <pendiente>": self.root / "missing"},
+                 "SALIDA": self.root / "report", "compare_runs": compare_runs}
+        shown = []
+        with patch.object(IPython.display, "display", shown.append):
+            exec(source, scope)
+        self.assertEqual(len(shown), 1)
+        self.assertIn("<video", shown[0].data)
+        self.assertIn("base64,", shown[0].data)
+        self.assertIn("Aún no hay video", shown[0].data)
+        self.assertIn("Caso &lt;pendiente&gt;", shown[0].data)
+
     def test_export_is_read_only_and_archive_contains_current_snapshot(self):
         a = self.run_folder("a", [{"step": 0, "episode/eval_score": 0},
                                   {"step": 25000, "episode/eval_score": 4},
