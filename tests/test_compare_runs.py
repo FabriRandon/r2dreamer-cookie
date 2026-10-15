@@ -67,6 +67,20 @@ class ComparisonTests(unittest.TestCase):
         (path / "status.json").write_text('{"step":')
         self.assertIsNone(summarize(load_run(path), 20)["Último checkpoint"])
 
+    def test_recent_summary_keeps_last_value_and_variation(self):
+        path = self.run_folder("test", [{"step": step, "episode/eval_score": score}
+                                        for step, score in [(0, 0), (25000, 1), (50000, 10),
+                                                            (75000, 12), (100000, 5)]], sampler=1)
+        summary = summarize(load_run(path), 20, last_evals=3)
+        self.assertEqual(summary["Última evaluación"], 5)
+        self.assertEqual(summary["Media tramo final"], 9)
+        self.assertEqual(summary["Mínimo tramo final"], 5)
+        self.assertEqual(summary["Máximo tramo final"], 12)
+        self.assertEqual(summary["Paso inicio tramo final"], 50000)
+        self.assertEqual(summary["Evaluaciones tramo final"], 3)
+        self.assertIn("repaso de éxitos", summary["Experimento"])
+        self.assertIn("recompensa", summary["Qué cambia"])
+
     def test_common_evaluation_uses_exact_steps_and_skips_runs_without_evals(self):
         a = self.run_folder("a", [{"step": 25000, "episode/eval_score": 0},
                                   {"step": 50000, "episode/eval_score": 10}])
@@ -120,7 +134,8 @@ class ComparisonTests(unittest.TestCase):
         original = {p: p.read_bytes() for p in paths}
         report = generate_report([load_run(a), load_run(b)], self.root / "report")
         self.assertEqual(report["common_step"], 25000)
-        self.assertEqual(len(report["images"]), 5)
+        self.assertTrue({"evaluacion_vistas", "evaluacion_5x5", "evaluacion_por_caso", "resumen_tramo_final"}
+                        <= {path.stem for path in report["images"]})
         self.assertEqual(original, {p: p.read_bytes() for p in paths})
         with zipfile.ZipFile(report["archive"]) as archive:
             self.assertIn("resumen.csv", archive.namelist())
