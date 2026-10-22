@@ -16,3 +16,7 @@ Los resultados quedan en `MyDrive/galleta/semana22/{tarea}_s0_random`. Cada run 
 Selecciona L4 y ejecuta las secciones 1 a 10. La sección 6 muestra la política configurada; la prueba corta y la sección 10 verifican la configuración efectiva de Hydra antes de iniciar procesos. Rechazan `random_policy=False` y una carpeta anterior incompatible. El guardado y el apagado automático conservan el flujo de los notebooks anteriores.
 
 **Medida de aprendizaje: `episode/eval_score`.** `episode/score` es la recompensa de la política random recolectora y no mide el aprendizaje del actor. El gráfico de la sección 11 y el video de la sección 12 muestran al actor aprendido.
+
+## Videos de la presentación
+
+[Abrir](https://colab.research.google.com/github/FabriRandon/r2dreamer-cookie/blob/main/notebooks/experimentos-semana-del-22/videos_presentacion.ipynb) los ocho videos ordenados por experimento (mapa completo, 7×7, 5×5 y 3×3), con la política normal al lado de la random. Usa CPU.
