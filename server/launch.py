@@ -4,7 +4,8 @@ Standard library only, so it runs with the server's system python3 (no venv):
 
     python3 server/launch.py list
     python3 server/launch.py run exp3-normal --dry-run     # show what would run
-    python3 server/launch.py run exp3-normal exp3-random   # enqueue with `ts -G 1`
+    python3 server/launch.py check                         # a short job: does the job see the GPU?
+    python3 server/launch.py run exp3-normal exp3-random   # enqueue with Slurm (sbatch) or, without it, `ts -G 1`
     python3 server/launch.py run exp3-expert               # 1M steps, data only from the expert
     python3 server/launch.py run all --smoke               # 1,500-step test of every experiment
 
@@ -23,6 +24,7 @@ import argparse
 import json
 import os
 import pathlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -209,8 +211,12 @@ def command(name, overrides, args, folder):
     inner = ["bash", str(RUN_GPU), "python", "-u", "train.py", *overrides]
     if args.no_ts:
         return inner, {}
+    return ts_command(name, inner, args)
+
+
+def ts_command(name, inner, args):
     ts = [args.ts_bin]
-    if not args.cpu and args.gpus:
+    if not getattr(args, "cpu", False) and args.gpus:
         ts += ["-G", str(args.gpus)]
     ts += ["-L", f"{name}"]
     env = {}
@@ -222,19 +228,132 @@ def command(name, overrides, args, folder):
     return ts + inner, env
 
 
+def pick_backend(args):
+    """`slurm` when sbatch exists (the server moved from task spooler to Slurm), else `ts`."""
+    if args.backend != "auto":
+        return args.backend
+    return "slurm" if shutil.which("sbatch") else "ts"
+
+
+def slurm_script(name, argv, args, outdir, time_limit, mem):
+    """The sbatch script that runs `argv` (a `bash server/run_gpu.sh ...` command).
+
+    Python runs as a job step (srun), so that `scancel -s TERM <id>` and the
+    `--signal` before the time limit reach Python itself, which then stops at
+    the end of its step and saves, as it does for ts -k. --cpus-per-task is
+    repeated for srun because since Slurm 22.05 it no longer inherits it from
+    sbatch (the step would get one core for the main process and its workers).
+    Steps get all the GPUs of the job by default.
+    """
+    directives = [
+        f"--job-name={name}",
+        f"--output={outdir}/%x-%j.out",
+        f"--cpus-per-task={args.cpus}",
+        f"--mem={mem}",
+        f"--time={time_limit}",
+    ]
+    if not getattr(args, "cpu", False):
+        directives.append(f"--gres={args.gres or 'gpu:%d' % args.gpus}")
+    if args.grace:
+        # Seconds before the time limit at which the steps get SIGTERM, enough
+        # to save the agent and the replay buffer, so a run that does not fit
+        # in the time limit stops cleanly and can be continued.
+        directives.append(f"--signal=TERM@{args.grace}")
+    for flag in ("partition", "account", "qos"):
+        if getattr(args, flag):
+            directives.append(f"--{flag}={getattr(args, flag)}")
+    directives += list(args.sbatch_opt)
+    command = " ".join(shlex.quote(str(a)) for a in argv)
+    lines = ["#!/bin/bash", *(f"#SBATCH {d}" for d in directives), "",
+             f"cd {shlex.quote(str(REPO))}",
+             'echo "=== slurm job $SLURM_JOB_ID ($SLURM_JOB_NAME) en $(hostname); nodo(s): $SLURM_JOB_NODELIST"',
+             f"srun --cpus-per-task={args.cpus} {command}", ""]
+    return "\n".join(lines)
+
+
+def submit_slurm(name, script, args, outdir, dependency=None):
+    """sbatch the script; returns its job id."""
+    outdir.mkdir(parents=True, exist_ok=True)  # Slurm does not create the folder of --output
+    path = outdir / f"{name}.sbatch"
+    path.write_text(script)
+    cmd = ["sbatch", "--parsable"] + (["--test-only"] if args.validate else [])
+    if dependency:
+        cmd.append(f"--dependency=afterany:{dependency}")
+    done = subprocess.run(cmd + [str(path)], cwd=REPO, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if done.stderr.strip():
+        print("  " + done.stderr.strip().replace("\n", "\n  "))
+    if done.returncode != 0:
+        raise RuntimeError(f"sbatch rechazó el job {name} (código {done.returncode}): {done.stdout.strip()}")
+    return done.stdout.strip().split(";")[0] or None
+
+
+def dispatch(name, argv, args, time_limit, mem, outdir):
+    """Run or queue `argv` with the scheduler in use. Returns an exit code."""
+    backend = pick_backend(args)
+    if args.no_ts:
+        print(f"\n$ {' '.join(argv)}")
+        return 0 if args.dry_run else subprocess.run(argv, cwd=REPO).returncode
+    if backend == "ts":
+        cmd, env = ts_command(name, argv, args)
+        shown = " ".join(f"{k}={v}" for k, v in env.items()) + (" " if env else "")
+        print(f"\n$ {shown}{' '.join(cmd)}")
+        if args.dry_run:
+            return 0
+        done = subprocess.run(cmd, cwd=REPO, env={**os.environ, **env})
+        return done.returncode
+    script = slurm_script(name, argv, args, outdir, time_limit, mem)
+    print(f"\n--- script de sbatch para {name} ({outdir / (name + '.sbatch')}):\n{script}---")
+    if args.dry_run:
+        return 0
+    previous = None
+    for part in range(1, (1 if args.validate else args.chain) + 1):
+        job = submit_slurm(name, script, args, outdir, dependency=previous)
+        print(f"[{name}] " + ("(solo validado, no se encoló) " if args.validate else
+              f"job {job} encolado" + (f", parte {part} de {args.chain}, después de {previous}" if previous else "")))
+        previous = job
+    return 0
+
+
+def add_scheduler_options(parser):
+    """The options that say where and how a job is queued (`run` and `check`)."""
+    parser.add_argument("--logroot", default="~/logdir/r2dreamer/presentacion", help="folder that holds all the runs")
+    parser.add_argument("--backend", choices=["auto", "slurm", "ts"], default="auto",
+                        help="scheduler: Slurm if sbatch exists (default), else task spooler")
+    parser.add_argument("--gpus", type=int, default=1, help="GPUs requested (Slurm --gres=gpu:N, or ts -G N); default 1")
+    parser.add_argument("--no-ts", "--no-queue", dest="no_ts", action="store_true", help="run in the foreground instead of queueing")
+    parser.add_argument("--dry-run", action="store_true", help="print the commands/script only")
+    ts = parser.add_argument_group("task spooler (the previous scheduler)")
+    ts.add_argument("--gpu-id", type=int, help="force a GPU (sets CUDA_VISIBLE_DEVICES and R2D_GPU; see server/run_gpu.sh)")
+    ts.add_argument("--ts-bin", default=os.environ.get("TS", "ts"), help="task spooler binary (default `ts`)")
+    sl = parser.add_argument_group("Slurm")
+    sl.add_argument("--partition", "-p", help="sbatch --partition (see `sinfo`)")
+    sl.add_argument("--account", "-A", help="sbatch --account")
+    sl.add_argument("--qos", help="sbatch --qos")
+    sl.add_argument("--gres", help="the GPU request as the cluster names it, e.g. gpu:a6000:1 (default gpu:<--gpus>; see `sinfo -o '%%P %%G'`)")
+    sl.add_argument("--time", dest="time_limit", help="sbatch --time (default 1-00:00:00; 01:00:00 with --smoke); at most what the partition allows")
+    sl.add_argument("--mem", help="sbatch --mem (default 40G: the 500k-step buffer takes ~11 GB of RAM; 16G with --smoke)")
+    sl.add_argument("--cpus", type=int, default=8, help="sbatch --cpus-per-task (default 8)")
+    sl.add_argument("--grace", type=int, default=600,
+                    help="seconds before the time limit at which the run gets SIGTERM to stop and save (default 600; 0 = off)")
+    sl.add_argument("--chain", type=int, default=1,
+                    help="queue N jobs one after another (afterany) of the same run: each resumes the previous one's checkpoint, "
+                         "for runs that need more than the time limit")
+    sl.add_argument("--sbatch-opt", action="append", default=[], metavar="OPT",
+                    help="any other sbatch option, repeated if needed: --sbatch-opt=--constraint=a6000")
+    sl.add_argument("--validate", action="store_true", help="sbatch --test-only: Slurm checks the request and nothing is queued")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="action", required=True)
     sub.add_parser("list", help="show the experiments")
+    check = sub.add_parser("check", help="queue server/check_env.py (GPU, cookie env, torch.compile) as a short job")
+    add_scheduler_options(check)
     run = sub.add_parser("run", help="check and enqueue experiments")
     run.add_argument("names", nargs="+", help="experiment names (see `list`), or `all`")
     run.add_argument("--seed", type=int, default=0)
     run.add_argument("--steps", type=int, help="override the experiment's env.steps")
-    run.add_argument("--logroot", default="~/logdir/r2dreamer/presentacion", help="folder that holds all the runs")
-    run.add_argument("--gpus", type=int, default=1, help="GPUs requested from ts with -G (default 1)")
-    run.add_argument("--gpu-id", type=int, help="force a GPU (sets CUDA_VISIBLE_DEVICES and R2D_GPU; see server/run_gpu.sh)")
-    run.add_argument("--ts-bin", default=os.environ.get("TS", "ts"), help="task spooler binary (default `ts`)")
-    run.add_argument("--no-ts", action="store_true", help="run in the foreground instead of queueing")
+    add_scheduler_options(run)
     run.add_argument("--cpu", action="store_true", help="train on CPU (device=cpu, no compile); only for tests")
     run.add_argument("--buffer-device", choices=["cpu", "cuda"], default="cpu",
                      help="where the 500k-step replay buffer lives: RAM (~11 GB) or the GPU (~11 GB of VRAM)")
@@ -244,7 +363,6 @@ def parse_args():
     run.add_argument("--no-save-buffer", action="store_true",
                      help="never write the replay buffer; a resumed run starts with an empty one")
     run.add_argument("--smoke", action="store_true", help="1,500 steps in <logroot>/_smoke (emptied first): checks that everything works")
-    run.add_argument("--dry-run", action="store_true", help="check the configuration and print the commands only")
     run.add_argument("--extra", nargs=argparse.REMAINDER, default=[],
                      help="after this flag, extra Hydra overrides, e.g. --extra model.lr=2e-5")
     return parser.parse_args()
@@ -258,13 +376,25 @@ def main():
             print(f"{name:12s} {spec['steps']:>9,} pasos  {spec['what']}")
         return 0
 
+    backend = pick_backend(args)
+    needed = {"slurm": "sbatch", "ts": args.ts_bin}[backend]
+    if not args.dry_run and not args.no_ts and shutil.which(needed) is None:
+        print(f"No encuentro `{needed}` en el PATH (scheduler: {backend}). Usa --backend o --no-ts.", file=sys.stderr)
+        return 2
+    if args.chain < 1:
+        print("--chain debe ser al menos 1", file=sys.stderr)
+        return 2
+    logroot = pathlib.Path(args.logroot).expanduser().resolve()
+
+    if args.action == "check":
+        argv = ["bash", str(RUN_GPU), "python", "server/check_env.py"]
+        args.cpu = False
+        return dispatch("check_env", argv, args, args.time_limit or "00:20:00", args.mem or "16G", logroot / "slurm")
+
     names = list(EXPERIMENTS) if args.names == ["all"] else args.names
     unknown = [n for n in names if n not in EXPERIMENTS]
     if unknown:
         print(f"No existe: {', '.join(unknown)}. Los que hay: {', '.join(EXPERIMENTS)}", file=sys.stderr)
-        return 2
-    if not args.dry_run and not args.no_ts and shutil.which(args.ts_bin) is None:
-        print(f"No encuentro `{args.ts_bin}` en el PATH. Usa --no-ts para correr en primer plano.", file=sys.stderr)
         return 2
 
     plan = []
@@ -277,23 +407,26 @@ def main():
         if args.extra:
             print(f"  AVISO: --extra cambia ajustes pero la carpeta sigue llamándose {folder}. Si es una variante nueva, "
                   "usa otra --logroot; solo se comprueban contra un run existente: " + ", ".join(SAME_AS_SAVED) + ".")
-        plan.append((name, logdir, *command(name, overrides, args, folder)))
+        plan.append((name, logdir, overrides))
 
-    for name, logdir, cmd, env in plan:
+    for name, logdir, overrides in plan:
         if args.smoke and not args.dry_run and logdir.exists():
             # A finished smoke run would resume at its last step and test nothing.
             assert "_smoke" in logdir.parts, logdir
             shutil.rmtree(logdir)
-        shown = " ".join(f"{k}={v}" for k, v in env.items()) + (" " if env else "")
-        print(f"\n$ {shown}{' '.join(cmd)}")
-        if args.dry_run:
-            continue
-        done = subprocess.run(cmd, cwd=REPO, env={**os.environ, **env})
-        if done.returncode != 0:
-            print(f"[{name}] terminó con código {done.returncode}", file=sys.stderr)
-            return done.returncode
-    if not args.dry_run and not args.no_ts:
-        print("\nEncolado. Mira la cola con `ts`, el avance con `python3 server/status.py` y el log con `ts -t <id>`.")
+        argv = ["bash", str(RUN_GPU), "python", "-u", "train.py", *overrides]
+        time_limit = args.time_limit or ("01:00:00" if args.smoke else "1-00:00:00")
+        mem = args.mem or ("16G" if args.smoke else "40G")
+        code = dispatch(name, argv, args, time_limit, mem, logroot / "slurm")
+        if code != 0:
+            print(f"[{name}] terminó con código {code}", file=sys.stderr)
+            return code
+    if not args.dry_run and not args.no_ts and not args.validate:
+        if backend == "slurm":
+            print("\nEncolado. Mira la cola con `squeue -u $USER`, el avance con `python3 server/status.py` y el log con "
+                  f"`tail -f {logroot}/slurm/<nombre>-<id>.out`.")
+        else:
+            print("\nEncolado. Mira la cola con `ts`, el avance con `python3 server/status.py` y el log con `ts -t <id>`.")
     return 0
 
 

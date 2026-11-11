@@ -126,6 +126,10 @@ dmypy.json
 
 # virtual environments
 .venv
+# Python/uv installed inside the project when the server has no Python 3.11 (docs/servidor.md)
+.uv/
+.python/
+.uvcache/
 
 # IDE
 .vscode

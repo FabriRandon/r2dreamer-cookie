@@ -3,9 +3,13 @@
 import argparse
 import ast
 import json
+import os
 import shlex
+import subprocess
 import sys
+import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -151,6 +155,85 @@ class LaunchTests(unittest.TestCase):
         cmd, _ = launch.command("exp3-normal", ["env=cookie"], args_for(
             no_ts=False, ts_bin="ts", gpus=1, gpu_id=None, cpu=True), "x")
         self.assertNotIn("-G", cmd)
+
+
+def slurm_args(**changes):
+    values = dict(
+        backend="slurm", no_ts=False, dry_run=False, validate=False, chain=1, cpus=8, gpus=1, gres=None, grace=600,
+        partition=None, account=None, qos=None, sbatch_opt=[], cpu=False, ts_bin="ts", gpu_id=None,
+    )
+    values.update(changes)
+    return argparse.Namespace(**values)
+
+
+class SlurmTests(unittest.TestCase):
+    ARGV = ["bash", "/repo/server/run_gpu.sh", "python", "-u", "train.py", "env=cookie", "env.size=[64,64]"]
+
+    def test_script(self):
+        script = launch.slurm_script("exp3-expert", self.ARGV, slurm_args(partition="gpu", account="lab"),
+                                     Path("/logs/slurm"), "1-00:00:00", "40G")
+        lines = script.splitlines()
+        self.assertEqual(lines[0], "#!/bin/bash")
+        for directive in ("--job-name=exp3-expert", "--output=/logs/slurm/%x-%j.out", "--cpus-per-task=8", "--mem=40G",
+                          "--time=1-00:00:00", "--gres=gpu:1", "--signal=TERM@600", "--partition=gpu", "--account=lab"):
+            self.assertIn(f"#SBATCH {directive}", lines)
+        # One job step; the brackets of env.size are quoted so bash does not glob them.
+        run = lines[-1]
+        self.assertTrue(run.startswith("srun --cpus-per-task=8 bash "), run)
+        self.assertIn("'env.size=[64,64]'", run)
+        self.assertNotIn("--qos", script)
+
+    def test_options(self):
+        script = launch.slurm_script("x", self.ARGV, slurm_args(gres="gpu:a6000:1", grace=0, sbatch_opt=["--constraint=a"]),
+                                     Path("/o"), "00:20:00", "16G")
+        self.assertIn("#SBATCH --gres=gpu:a6000:1", script)
+        self.assertIn("#SBATCH --constraint=a", script)
+        self.assertNotIn("--signal", script)
+        self.assertNotIn("--gres", launch.slurm_script("x", self.ARGV, slurm_args(cpu=True), Path("/o"), "1:00", "1G"))
+
+    def test_chain_queues_each_job_after_the_previous_one(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return argparse.Namespace(returncode=0, stdout=f"{100 + len(calls)}\n", stderr="")
+
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(launch.subprocess, "run", fake_run):
+            launch.dispatch("exp3-expert", self.ARGV, slurm_args(chain=3), "1:00", "1G", Path(folder))
+            self.assertTrue((Path(folder) / "exp3-expert.sbatch").exists())
+        self.assertEqual(len(calls), 3)
+        self.assertFalse(any(a.startswith("--dependency") for a in calls[0]))
+        self.assertIn("--dependency=afterany:101", calls[1])
+        self.assertIn("--dependency=afterany:102", calls[2])
+        self.assertTrue(all(c[0] == "sbatch" and "--parsable" in c for c in calls))
+
+    def test_validate_queues_nothing(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return argparse.Namespace(returncode=0, stdout="7\n", stderr="")
+
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(launch.subprocess, "run", fake_run):
+            launch.dispatch("x", self.ARGV, slurm_args(validate=True, chain=3), "1:00", "1G", Path(folder))
+        self.assertEqual(len(calls), 1)
+        self.assertIn("--test-only", calls[0])
+
+    def test_dry_run_from_the_command_line(self):
+        env = {**os.environ, "R2D_VENV": "/nonexistent"}  # skips the Hydra check, which needs the venv
+        out = subprocess.run(
+            [sys.executable, str(ROOT / "server/launch.py"), "run", "exp3-expert", "--dry-run", "--backend", "slurm",
+             "--partition", "gpu", "--logroot", "/tmp/r2d-test-logs"], env=env, capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertIn("#SBATCH --partition=gpu", out)
+        self.assertIn("trainer.data_mix.expert=1", out)
+        self.assertIn("1000000", out)
+        out = subprocess.run(
+            [sys.executable, str(ROOT / "server/launch.py"), "check", "--dry-run", "--backend", "slurm"],
+            env=env, capture_output=True, text=True, check=True,
+        ).stdout
+        self.assertIn("server/check_env.py", out)
+        self.assertIn("#SBATCH --time=00:20:00", out)
 
 
 if __name__ == "__main__":

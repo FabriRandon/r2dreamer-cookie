@@ -1,6 +1,6 @@
 # Correr los experimentos en el servidor (SSH + task spooler)
 
-Guía para entrenar R2-Dreamer / DreamerV3 (PyTorch) en el ambiente de la galleta en el servidor Linux con GPU, en vez de Colab. Todo se hace por SSH y con la cola `ts`, igual que con el DreamerV3 en JAX.
+Guía para entrenar R2-Dreamer / DreamerV3 (PyTorch) en el ambiente de la galleta en el servidor Linux con GPU, en vez de Colab. Todo se hace por SSH. El servidor encolaba con `ts` y ahora usa **Slurm**: empieza por la sección 0. Las secciones con `ts` quedan para servidores que sigan usándolo.
 
 En `server/` están las herramientas; el código del entrenamiento es el mismo que usaste en Colab.
 
@@ -20,6 +20,69 @@ Lo que cambió respecto de Colab:
 - No hay apagado automático de la sesión ni botón de detener: se usa la cola de `ts`.
 - La verificación de configuración de los notebooks `random` ahora la hace `launch.py` para **todos** los experimentos antes de encolar.
 - `matplotlib` pasó a ser un extra (`.[analysis]`), porque en un venv no viene instalado (en Colab sí). `setup.sh` lo instala.
+
+---
+
+## 0. `barto` usa Slurm (desde hace poco): lo que cambia
+
+Ya no se encola con `ts`: las GPU solo se asignan dentro de un job de Slurm (por eso `nvidia-smi` desde la sesión de entrada no las ve). `launch.py` detecta `sbatch` y lo usa solo (`--backend ts` fuerza el modo anterior). Las secciones 4 a 6 y 10 de esta guía hablan de `ts`; la tabla traduce los comandos de cola:
+
+| Con `ts` | Con Slurm |
+|---|---|
+| `ts` | `squeue -u $USER` |
+| `ts -t <id>` | `tail -f ~/logdir/r2dreamer/presentacion/slurm/<nombre>-<id>.out` |
+| `ts -c <id>` | `cat ~/logdir/r2dreamer/presentacion/slurm/<nombre>-<id>.out` |
+| `ts -k <id>` (detiene y **guarda**) | `scancel -s TERM <id>` (detiene y guarda). **No** uses `scancel <id>` a secas: termina con SIGKILL a los ~30 s (`KillWait`) y guardar el buffer tarda más |
+| `ts -r <id>` | `scancel <id>` (si todavía no partió, no hay nada que guardar) |
+| `ts -G 1` | `--gres=gpu:1`, que `launch.py` agrega solo (`--gres` si el clúster nombra la GPU de otra forma) |
+
+**Pasos en orden** (el `<PARTICION>` sale de `sinfo`):
+
+```bash
+cd ~/r2dreamer-cookie && git pull --ff-only
+```
+```bash
+sinfo -o "%P %a %l %D %G"
+```
+Las particiones, si están activas (`up`), su límite de tiempo (`%l`) y las GPU que ofrecen (`%G`, p. ej. `gpu:rtx_a6000:2`). Si necesitas cuenta o QOS: `sacctmgr -n show assoc user=$USER format=account%20,partition%20,qos%30`.
+
+```bash
+python3 server/launch.py check --partition <PARTICION> --validate
+```
+Slurm revisa la petición (`sbatch --test-only`) y dice cuándo empezaría; no encola nada. Si rechaza algo (partición, GRES, tiempo), el mensaje dice qué. Entonces encola el chequeo de verdad:
+
+```bash
+python3 server/launch.py check --partition <PARTICION>
+squeue -u $USER
+cat ~/logdir/r2dreamer/presentacion/slurm/check_env-<id>.out
+```
+Debe decir `ok torch ve una GPU` y `ok torch.compile funciona`. Si el job ve la GPU pero `torch.compile` falla, usa `--no-compile` en lo que sigue.
+
+```bash
+python3 server/launch.py run exp3-expert --smoke --partition <PARTICION>
+```
+Prueba de 1.500 pasos (1 h de límite, 16 GB). Al terminar, `python3 server/status.py --root ~/logdir/r2dreamer/presentacion/_smoke` y la columna `pasos/s` dan la velocidad real, con la que estimas el tiempo: `1.000.000 / pasos_por_segundo / 3600` horas. (Como referencia, la L4 de Colab hacía unos 25 pasos/s con `torch.compile`.)
+
+```bash
+python3 server/launch.py run exp3-expert --partition <PARTICION> --dry-run
+python3 server/launch.py run exp3-expert --partition <PARTICION>
+```
+El primero muestra la configuración verificada y el script de `sbatch` sin encolar; el segundo encola. Si el límite de la partición es menor que lo que dura el run, usa `--time <límite>` y `--chain N`: se encolan N jobs seguidos del mismo run, cada uno retoma el checkpoint del anterior (`--dependency=afterany`). Un job que se acerca a su límite recibe SIGTERM 10 minutos antes (`--grace 600`), se detiene, guarda el modelo y el buffer y termina limpio; los que sobren después de que el run acabó solo imprimen `Nothing left to train`.
+
+Seguimiento, detener y retomar:
+
+```bash
+squeue -u $USER -o "%.10i %.22j %.9T %.10M %.12l %R"      # estado, tiempo usado, límite y motivo si está pendiente
+tail -f ~/logdir/r2dreamer/presentacion/slurm/exp3-expert-<id>.out
+python3 server/status.py
+scancel -s TERM <id>                                       # detener y guardar
+sacct -j <id> --format=JobID,State,Elapsed,MaxRSS,ExitCode # al terminar: ¿alcanzó la memoria? (MaxRSS vs 40G)
+```
+Para retomar, repite exactamente el mismo `launch.py run ...`. Si un job queda `PENDING`, `squeue` explica el motivo (`Resources`, `Priority`, `QOS...`); `squeue -u $USER --start` estima la hora de inicio.
+
+Opciones de Slurm de `launch.py`: `--partition/-p`, `--account/-A`, `--qos`, `--gres`, `--time`, `--mem` (por defecto 40G: el buffer de 500.000 pasos usa ~11 GB de RAM y Slurm mata el job si se pasa), `--cpus` (8), `--grace`, `--chain`, `--sbatch-opt=--constraint=...` para cualquier otra, y `--validate`. Los scripts generados quedan en `~/logdir/r2dreamer/presentacion/slurm/<nombre>.sbatch`.
+
+> Esta parte la probé con tests y mirando la documentación de Slurm, pero no en un Slurm real. Por eso conviene hacer el `check` y el `--smoke` antes del run largo.
 
 ---
 
