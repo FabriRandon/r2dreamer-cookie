@@ -54,3 +54,15 @@ trainer:
   # Collect data with uniformly random actions instead of the actor, to
   # study the world model learned from undirected experience.
   random_policy: False
+  # Share of the collected episodes played by each source (normalised, so only
+  # the proportions matter). Each episode is assigned to one source when it
+  # starts: "actor" is Dreamer's own policy, "random" picks uniformly random
+  # actions, and "expert" is the hand-written perfect policy of the cookie
+  # task (envs/expert.py). Evaluation always uses the actor.
+  # With none set (all 0) the actor plays every episode. Examples:
+  #   trainer.data_mix.expert=1                            expert data only
+  #   trainer.data_mix.actor=2 trainer.data_mix.random=1   two thirds actor, one third random
+  data_mix:
+    actor: 0.0
+    random: 0.0
+    expert: 0.0

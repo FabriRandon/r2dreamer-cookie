@@ -36,6 +36,10 @@ python3 train.py model.rep_loss=r2dreamer
 For easier code reading, inline tensor shape annotations are provided. See [`docs/tensor_shapes.md`](docs/tensor_shapes.md).
 
 
+### Cookie domain on a server (SSH + task spooler)
+
+To train the cookie experiments on a Linux server with `ts` instead of Colab, see [`docs/servidor.md`](docs/servidor.md) (in Spanish): `server/setup.sh` installs, `server/launch.py` queues the presentation's experiments, `server/status.py` and `server/sync_logs.sh` follow and analyze them.
+
 ## Available Benchmarks
 At the moment, the following benchmarks are available in this repository.
 

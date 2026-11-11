@@ -116,4 +116,7 @@ def make_env(config, id):
     else:
         raise NotImplementedError(suite)
     env = wrappers.TimeLimit(env, config.time_limit // config.action_repeat)
-    return wrappers.Dtype(env)
+    env = wrappers.Dtype(env)
+    if suite == "cookie":
+        env = wrappers.Expert(env)
+    return env

@@ -4,10 +4,17 @@ import shutil
 import sys
 import time
 
+import numpy as np
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 
 import tools
+
+# Who picks the actions of an episode: Dreamer's actor, uniformly random
+# actions, or the environment's hand-written perfect policy (cookie only).
+SOURCES = ("actor", "random", "expert")
+ACTOR, RANDOM, EXPERT = range(3)
 
 
 def _every_from(every, start):
@@ -21,6 +28,43 @@ def _every_from(every, start):
     if every:
         clock(start - start % every)
     return clock
+
+
+class DataMix:
+    """What share of the collected episodes each source plays.
+
+    `weights` maps "actor", "random" and "expert" to non-negative numbers; they
+    are normalised, so {actor: 1, expert: 1} is half and half, and {expert: 1}
+    alone is expert data only. With none set the actor plays every episode.
+    Every episode is assigned to one source when it starts, at random with
+    those probabilities, and keeps it until it ends. `random_policy` is the
+    older way to say {random: 1}.
+    """
+
+    def __init__(self, weights=None, random_policy=False):
+        weights = {} if weights is None else {k: float(v) for k, v in dict(weights).items()}
+        unknown = set(weights) - set(SOURCES)
+        assert not unknown, f"data_mix has unknown sources {sorted(unknown)}; they are {SOURCES}"
+        weights = {name: weights.get(name, 0.0) for name in SOURCES}
+        if random_policy:
+            assert not any(weights.values()), "trainer.random_policy is the same as data_mix {random: 1}; set one of them, not both"
+            weights["random"] = 1.0
+        elif not any(weights.values()):
+            weights["actor"] = 1.0  # nothing set: the usual, the actor collects everything
+        assert all(w >= 0 for w in weights.values()) and sum(weights.values()) > 0, f"bad data_mix {weights}"
+        total = sum(weights.values())
+        self.probs = np.array([weights[name] / total for name in SOURCES])
+
+    def sample(self, n):
+        """The sources of `n` new episodes."""
+        if self.probs.max() == 1.0:
+            # A single source needs no randomness, and leaves the seeded
+            # generators as they were before the mix existed.
+            return np.full(n, int(self.probs.argmax()), dtype=np.int64)
+        return np.random.choice(len(SOURCES), size=n, p=self.probs)
+
+    def __str__(self):
+        return ", ".join(f"{name} {p:.0%}" for name, p in zip(SOURCES, self.probs) if p > 0)
 
 
 class OnlineTrainer:
@@ -48,7 +92,7 @@ class OnlineTrainer:
         self._save_buffer = bool(config.save_buffer)
         self._stop_at = int(config.stop_at) if config.get("stop_at") is not None else None
         self._action_repeat = config.action_repeat
-        self._random_policy = bool(config.random_policy)
+        self._mix = DataMix(config.get("data_mix"), random_policy=bool(config.random_policy))
         self._progress_start = self._progress_start_step = self._progress_last = None
         # Set from a signal handler to stop at the end of the current step.
         self.stop_requested = False
@@ -176,6 +220,21 @@ class OnlineTrainer:
         self.logger.write(train_step)
         agent.train()
 
+    def _take_over(self, agent, envs, act, source, done):
+        """The actor's actions, replaced in the envs whose episode belongs to
+        the random policy or to the expert. (B, A) -> (B, A)"""
+        random_envs = source == RANDOM
+        if random_envs.any():
+            random = agent.random_action(envs.env_num)
+            act = torch.where(torch.as_tensor(random_envs, device=act.device).unsqueeze(-1), random, act)
+        # An env that just ended has no next action; it restarts instead.
+        expert_envs = np.flatnonzero((source == EXPERT) & ~done.cpu().numpy())
+        if len(expert_envs):
+            expert = torch.as_tensor(envs.expert_actions(expert_envs), device=act.device)
+            act = act.clone()
+            act[torch.as_tensor(expert_envs, device=act.device)] = F.one_hot(expert, act.shape[-1]).to(act.dtype)
+        return act
+
     def _report_progress(self, step, every=120):
         """Print how far the run is and how long it has left, every few minutes."""
         now = time.time()
@@ -225,6 +284,10 @@ class OnlineTrainer:
             envs.env_num, dtype=torch.int32, device=agent.device
         )  # Kept constant so short episodes (< batch_length) remain sampable; RSSM resets via is_first.
         train_metrics = {}
+        # Source of each env's current episode, and how many episodes each has had.
+        source = np.zeros(envs.env_num, dtype=np.int64)
+        episodes = np.zeros(len(SOURCES))
+        print(f"Collecting data with: {self._mix}")
         agent_state = agent.get_initial_state(envs.env_num)
         # (B, A)
         act = agent_state["prev_action"].clone()
@@ -259,6 +322,12 @@ class OnlineTrainer:
                             video_cache = []
                         self.logger.scalar("episode/score", returns[i])
                         self.logger.scalar("episode/length", lengths[i])
+                        # The score by who played the episode, since a mix of
+                        # sources makes the plain average hard to read.
+                        self.logger.scalar(f"episode/score_{SOURCES[source[i]]}", returns[i])
+                        episodes[source[i]] += 1
+                        for name, count in zip(SOURCES, episodes / episodes.sum()):
+                            self.logger.scalar(f"data/episodes_{name}", count)
                         for key, value in episode_logs.items():
                             self.logger.scalar(f"episode/{key[4:]}", value[i])
                             value[i] = 0
@@ -275,6 +344,10 @@ class OnlineTrainer:
             # on GPU).  The .to() calls below are no-ops when the data is
             # already on agent.device.
             # (B, A), (B,)
+            # The envs that are done restart now, with a source for the new episode.
+            restarting = done.cpu().numpy()
+            if restarting.any():
+                source[restarting] = self._mix.sample(int(restarting.sum()))
             trans, step_done = envs.step(act.detach(), done)
             # dict of (B, 1, *)
             trans = trans.to(agent.device, non_blocking=True)
@@ -285,10 +358,10 @@ class OnlineTrainer:
             # "agent_state" is reset by the agent based on the "is_first" flag in trans.
             # (B, A)
             act, agent_state = agent.act(trans.clone(), agent_state, eval=False)
-            if self._random_policy:
+            if (source != ACTOR).any():
                 # agent.act still tracks the latent state, but the action fed
                 # back into it must be the one actually taken.
-                act = agent.random_action(envs.env_num)
+                act = self._take_over(agent, envs, act, source, done)
                 agent_state["prev_action"] = act
 
             # Store transition.

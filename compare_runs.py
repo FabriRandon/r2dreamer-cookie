@@ -230,7 +230,7 @@ def generate_report(runs, out, window=20, last_evals=3):
     if last_evals < 1:
         raise ValueError("El tramo final debe incluir al menos una evaluación")
     if not runs:
-        raise ValueError("No se encontraron métricas. Revisa Drive y las rutas de la sección 3.")
+        raise ValueError("No se encontraron métricas. Revisa la carpeta de los runs (Drive o --root).")
     # Present the reference first, then the original views, then interventions.
     def order(run):
         sampler = number(run.config.get("buffer", {}).get("reward_slices")) or 0

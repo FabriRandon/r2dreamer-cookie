@@ -9,6 +9,8 @@ time_limit: 2088
 # Only turn and move; moving into the button presses it.
 press_on_move: True
 
+
+
 seed: ${seed}
 device: ${device}
 
@@ -19,3 +21,5 @@ encoder:
 decoder:
   mlp_keys: '$^'
   cnn_keys: 'image'
+
+

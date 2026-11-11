@@ -30,6 +30,8 @@ metaworld = ["metaworld==3.0.0", "mujoco==3.3.0"]
 memorymaze = ["memory_maze==1.0.3", "mujoco==3.3.0", "dm_control==1.0.28", "gym==0.26.2"]
 isaaclab = ["isaaclab[isaacsim,all]==2.3.2"]
 cookie = ["cookie-env @ git+https://github.com/pedropalmav/cookie-env@a1e6f85ae8932f5f2394aa1f691c056cdc34af4e"]
+# Plots of progress.py and compare_runs.py (Colab ships matplotlib; a venv does not).
+analysis = ["matplotlib>=3.8"]
 all = ["r2dreamer[dmc,atari,crafter,metaworld,memorymaze,isaaclab,cookie]"]
 
 [dependency-groups]

@@ -78,6 +78,16 @@ def series(rows, key):
     return [(row["step"], row[key]) for row in rows if key in row]
 
 
+SOURCES = {"actor": "el actor", "random": "un agente al azar", "expert": "el experto"}
+
+
+def collectors(rows):
+    """Who played the training episodes, from the per-source scores the trainer
+    logs (episode/score_<source>). Runs from before the data mix do not have
+    them: nothing is known and the actor is assumed."""
+    return {name for name in SOURCES if series(rows, f"episode/score_{name}")}
+
+
 def rolling(points, window):
     """Average of the last `window` points at each point."""
     out, total = [], 0.0
@@ -124,6 +134,19 @@ def summarize(logdir, rows, status, task, window):
     score = latest.get("score", 0.0)
     last_eval = evals[-1][1] if evals else 0.0
     print()
+    played = collectors(rows)
+    if played and "actor" not in played:
+        # The training episodes are not the actor's, so they say nothing about
+        # what it learned; only the evaluations (always the actor) do.
+        who = " y ".join(SOURCES[name] for name in sorted(played))
+        print(f"Los datos de entrenamiento los juntó {who}: las partidas de arriba NO miden al actor. Mira la evaluación.")
+        if not evals:
+            print("Todavía no hay evaluaciones del actor.")
+        elif last_eval > 3 * random_ref.get("score", 0.0) + 0.1:
+            print("El actor ya consigue galletas en la evaluación: está aprendiendo de esos datos.")
+        else:
+            print("El actor todavía no consigue galletas en la evaluación.")
+        return takeoff, random_ref
     if score > 3 * random_ref.get("score", 0.0) + 0.1 or last_eval > 0:
         print("Ya consigue galletas por su cuenta: el caso base está aprendiendo.")
     elif takeoff and step < takeoff:

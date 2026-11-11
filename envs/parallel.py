@@ -78,6 +78,16 @@ class ParallelEnv:
         return self.lift_dim(td), done
 
 
+    def expert_actions(self, indices):
+        """The hand-written expert's action in each of the environments `indices`,
+        as an int array. Only the cookie environments have an expert."""
+        try:
+            promise = [self.envs[i].expert_action() for i in indices]
+        except ValueError as error:
+            raise ValueError("data_mix.expert needs an environment with a hand-written expert (the cookie task)") from error
+        return np.array([p() for p in promise], dtype=np.int64)
+
+
 class Parallel:
     def __init__(self, constructor, strategy):
         self.worker = Worker(bind(self._respond, constructor), strategy, state=True)
@@ -212,10 +222,13 @@ class ProcessPipeWorker:
 
     @staticmethod
     def _loop(pipe, function, initializers):
-        # A Ctrl+C in a terminal reaches every process of the run. The main
-        # process saves before quitting and closes the workers itself, so the
-        # workers must not die under it while it is still stepping them.
+        # A Ctrl+C in a terminal reaches every process of the run, and so does
+        # the SIGTERM of `ts -k` (task spooler signals the job's whole process
+        # group, workers included). The main process saves before quitting and
+        # closes the workers itself, so the workers must not die under it
+        # while it is still stepping them.
         signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         try:
             callid = None
             state = None

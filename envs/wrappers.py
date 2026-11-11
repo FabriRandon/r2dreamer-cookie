@@ -126,3 +126,14 @@ class Dtype(gym.Wrapper):
 
     def reset(self):
         return tools.convert(self.env.reset())
+
+
+class Expert(gym.Wrapper):
+    """Lets whoever holds the outermost wrapper (the env worker process) ask the
+    environment for its hand-written expert's action."""
+
+    def reset(self):
+        return self.env.reset()
+
+    def expert_action(self):
+        return self.env.unwrapped.expert_action()

@@ -119,6 +119,11 @@ class Cookie(gym.Env):
         self._seeded = False
         self._visited = set()
         self._button_pos = None
+        self._hallway = int(suffix[len("hall"):]) if suffix.startswith("hall") else 5
+        self._view = view
+        # The hand-written expert (envs/expert.py), built when first asked.
+        self._expert = None
+        self._expert_action = None
 
     @property
     def observation_space(self):
@@ -136,7 +141,32 @@ class Cookie(gym.Env):
             return gym.spaces.Discrete(3)
         return gym.spaces.Discrete(self._env.action_space.n)
 
+    def expert_action(self):
+        """The action of the hand-written perfect policy for the current state.
+
+        The expert decides from the agent's own 5x5 view and remembers where it
+        is from the actions it asked for, so the caller must take exactly the
+        action returned, at every step of the episode (step() checks it).
+        A new episode restarts it.
+        """
+        if self._expert is None:
+            from envs.expert import ExpertPolicy
+
+            assert self._press_on_move, "the expert presses the button by moving into it (press_on_move)"
+            assert self._view >= 5, f"the expert needs a view of at least 5x5, this one is {self._view}x{self._view}"
+            assert self._hallway == 5, f"the expert knows the map with hallways of 5 cells, not {self._hallway}"
+            self._expert = ExpertPolicy(hallway=self._hallway, seed=self._seed)
+            self._expert.reset()
+        self._expert_action = self._expert.act(self._env.unwrapped.gen_obs()["image"])
+        return self._expert_action
+
     def step(self, action):
+        if self._expert_action is not None and int(action) != self._expert_action:
+            raise RuntimeError(
+                f"the expert asked for action {self._expert_action} but {int(action)} was taken; "
+                "its memory of where it is would be wrong"
+            )
+        self._expert_action = None
         env = self._env.unwrapped
         facing_button = isinstance(env.grid.get(*env.front_pos), self._button)
         if self._press_on_move and action == FORWARD and facing_button:
@@ -164,6 +194,9 @@ class Cookie(gym.Env):
             random.seed(self._seed)
         obs, _ = self._env.reset(seed=None if self._seeded else self._seed)
         self._seeded = True
+        self._expert_action = None
+        if self._expert is not None:
+            self._expert.reset()
         env = self._env.unwrapped
         cell = tuple(int(v) for v in env.agent_pos)
         self._visited = {cell}
