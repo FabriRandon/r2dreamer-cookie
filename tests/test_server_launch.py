@@ -64,7 +64,7 @@ def same(a, b):
 
 class LaunchTests(unittest.TestCase):
     def test_every_experiment_has_a_notebook_except_the_expert_run(self):
-        self.assertEqual(set(launch.EXPERIMENTS) - {"exp3-expert"}, set(NOTEBOOKS))
+        self.assertEqual(set(launch.EXPERIMENTS) - {"exp3-expert", "exp3-mix", "local-expert"}, set(NOTEBOOKS))
 
     def test_the_expert_run_is_the_random_run_with_the_expert_collecting(self):
         mine, expected, logdir, folder = launch.build("exp3-expert", args_for())
@@ -81,7 +81,7 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(expected["trainer.data_mix.actor"], 0)
         # The other experiments do not touch data_mix.
         for name in launch.EXPERIMENTS:
-            if name != "exp3-expert":
+            if name not in ("exp3-expert", "exp3-mix", "local-expert"):
                 self.assertNotIn("trainer.data_mix.expert", as_dict(launch.build(name, args_for())[0]))
 
     def test_matches_the_notebooks(self):
@@ -112,6 +112,39 @@ class LaunchTests(unittest.TestCase):
             mine = as_dict(overrides)
             self.assertEqual(mine["model.train_actor_critic"], "True")
             self.assertEqual(mine["trainer.random_policy"], str(name.endswith("random")))
+
+    def test_the_mix_run_is_the_expert_run_with_equal_thirds(self):
+        mine, expected, logdir, folder = launch.build("exp3-mix", args_for())
+        mine = as_dict(mine)
+        expert = as_dict(launch.build("exp3-expert", args_for())[0])
+        self.assertEqual(folder, "cookie_partial_hall5_view5_s0_mix")
+        self.assertEqual([mine[f"trainer.data_mix.{k}"] for k in ("actor", "random", "expert")], ["1", "1", "1"])
+        self.assertEqual(mine["trainer.random_policy"], "False")
+        # Everything else (task, steps, buffer, entropy, evaluation...) is the expert run's.
+        differs = {k for k in set(mine) | set(expert) if k != "logdir" and mine.get(k) != expert.get(k)}
+        self.assertEqual(differs, {"trainer.data_mix.actor", "trainer.data_mix.random"})
+        self.assertEqual([expected[f"trainer.data_mix.{k}"] for k in ("actor", "random", "expert")], [1, 1, 1])
+
+    def test_local_run_fits_a_desktop_and_a_night(self):
+        mine, expected, logdir, folder = launch.build("local-expert", args_for())
+        mine = as_dict(mine)
+        self.assertEqual(folder, "cookie_partial_hall5_view5_s0_expert_local")  # not the server run's folder
+        self.assertEqual((mine["env.steps"], mine["buffer.max_size"], mine["trainer.max_hours"]), ("450000", "200000", "7.75"))
+        self.assertEqual(mine["trainer.data_mix.expert"], "1")
+        self.assertEqual(expected["trainer.data_mix.expert"], 1)
+        self.assertEqual(as_dict(launch.build("local-expert", args_for(max_hours=2.5))[0])["trainer.max_hours"], "2.5")
+        # The server's experiments keep the notebooks' buffer and have no time limit.
+        server = as_dict(launch.build("exp3-expert", args_for())[0])
+        self.assertEqual(server["buffer.max_size"], "500000")
+        self.assertNotIn("trainer.max_hours", server)
+
+    def test_without_a_scheduler_the_run_goes_local(self):
+        with mock.patch.object(launch.shutil, "which", lambda name: None):
+            self.assertEqual(launch.pick_backend(slurm_args(backend="auto")), "local")
+        with mock.patch.object(launch.shutil, "which", lambda name: "/usr/bin/" + name if name == "ts" else None):
+            self.assertEqual(launch.pick_backend(slurm_args(backend="auto")), "ts")
+        with mock.patch.object(launch.shutil, "which", lambda name: "/usr/bin/sbatch" if name == "sbatch" else None):
+            self.assertEqual(launch.pick_backend(slurm_args(backend="auto")), "slurm")
 
     def test_extra_overrides_replace_instead_of_repeating(self):
         overrides, expected, *_ = launch.build(

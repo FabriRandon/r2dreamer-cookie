@@ -38,6 +38,39 @@ class Run:
         return f"{match[1]}×{match[1]}" if match else ("Completa" if "full" in self.task else "?")
 
     @property
+    def sources(self):
+        """Share of the training episodes played by each source: "actor" (Dreamer's
+        policy), "random" and "expert". Runs from before trainer.data_mix existed
+        were played by the actor, or by a random agent with trainer.random_policy."""
+        trainer = self.config.get("trainer") or {}
+        weights = trainer.get("data_mix") or {}
+        mix = {name: number(weights.get(name)) or 0.0 for name in ("actor", "random", "expert")}
+        if not any(mix.values()):
+            mix["random" if trainer.get("random_policy") is True else "actor"] = 1.0
+        total = sum(mix.values())
+        return {name: value / total for name, value in mix.items() if value > 0}
+
+    @property
+    def data_label(self):
+        """Who collected the data, for the legend; empty when it is the actor alone."""
+        names = {"actor": "actor", "random": "azar", "expert": "experto"}
+        sources = self.sources
+        if set(sources) == {"actor"}:
+            return ""
+        if set(sources) == {"random"}:
+            return "datos al azar"
+        if set(sources) == {"expert"}:
+            return "datos solo del experto"
+        return "datos mezclados: " + ", ".join(f"{share:.0%} {names[name]}" for name, share in sources.items())
+
+    @property
+    def training_key(self):
+        """The training score that belongs to the actor. With a mix, the average over
+        everything includes the expert's cookies, so only the actor's own episodes count."""
+        sources = self.sources
+        return "episode/score_actor" if "actor" in sources and len(sources) > 1 else "episode/score"
+
+    @property
     def label(self):
         seed = self.config.get("seed")
         sampler = number(self.config.get("buffer", {}).get("reward_slices"))
@@ -49,6 +82,8 @@ class Run:
                 label += f" ({sampler:g} secuencias)"
         if entropy is not None and not math.isclose(entropy, 0.0003):
             label += " + más incentivo a explorar" if entropy > 0.0003 else " + menos incentivo a explorar"
+        if self.data_label:
+            label += f" · {self.data_label}"
         if seed not in (0, None):
             label += f" · semilla {seed}"
         return label
@@ -69,7 +104,10 @@ class Run:
         exploration = ""
         if entropy is not None and not math.isclose(entropy, 0.0003):
             exploration = f" El incentivo a mantener acciones variadas es {entropy / 0.0003:g} veces el original."
-        return f"{view} {replay}{exploration}"
+        data = ""
+        if self.data_label:
+            data = f" Los episodios de entrenamiento: {self.data_label.replace('datos ', '', 1)}."
+        return f"{view} {replay}{exploration}{data}"
 
     def points(self, key):
         return [(row["step"], row[key]) for row in self.rows if key in row]
@@ -184,13 +222,14 @@ def summarize(run, window, last_evals=3):
     checkpoint = number(run.status.get("step"))
     target = number(run.status.get("steps")) or number(run.config.get("env", {}).get("steps"))
     evaluations = run.points("episode/eval_score")
-    training = run.points("episode/score")
+    training = run.points(run.training_key)
     recent = evaluations[-last_evals:]
     complete = target is not None and checkpoint is not None and checkpoint >= target
     result = {
         "Experimento": run.label, "Qué cambia": run.description, "Carpeta": run.path.name, "Tarea": run.task,
         "Vista": run.view, "Semilla": run.config.get("seed"),
         "Sampler": run.config.get("buffer", {}).get("reward_slices"),
+        "Datos de entrenamiento": run.data_label or "actor",
         "Coeficiente entropía": run.config.get("model", {}).get("act_entropy"),
         "Partidas por evaluación": run.config.get("env", {}).get("eval_episode_num"),
         "Pasos objetivo": target, "Último paso en métricas": metrics_step,
@@ -270,6 +309,12 @@ def generate_report(runs, out, window=20, last_evals=3):
             return "#D55E00"
         if sampler:
             return "#7B3294"
+        if set(run.sources) == {"expert"}:
+            return "#CC79A7"
+        if len(run.sources) > 1:
+            return "#56B4E9"
+        if set(run.sources) == {"random"}:
+            return "#000000"
         return {"Completa": "#666666", "3×3": "#0072B2", "5×5": "#E69F00", "7×7": "#009E73"}.get(
             run.view, plt.get_cmap("tab10")(index % 10))
 
@@ -292,7 +337,7 @@ def generate_report(runs, out, window=20, last_evals=3):
     fig, ax = plt.subplots(figsize=(12, 6))
     drawn = 0
     for run in runs:
-        points = rolling(run.points("episode/score"), window)
+        points = rolling(run.points(run.training_key), window)
         if not points:
             continue
         steps, cookies = zip(*points)

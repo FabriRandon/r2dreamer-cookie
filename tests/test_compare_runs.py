@@ -187,5 +187,41 @@ class ComparisonTests(unittest.TestCase):
             generate_report([load_run(a)], a / "report")
 
 
+class DataSourceTests(unittest.TestCase):
+    """Runs that differ only in who played the training episodes must not look alike."""
+
+    def run_with(self, trainer):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        path = pathlib.Path(temp.name) / "run"
+        (path / ".hydra").mkdir(parents=True)
+        config = {"env": {"task": "cookie_partial_hall5_view5", "steps": 1000}, "seed": 0,
+                  "buffer": {"reward_slices": 0}, "model": {"act_entropy": 0.0003}, "trainer": trainer}
+        (path / ".hydra/config.yaml").write_text(yaml.safe_dump(config))
+        rows = [{"step": 816, "episode/score": 7.0, "episode/score_actor": 0.0}]
+        (path / "metrics.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        return load_run(path)
+
+    def test_labels_and_scores_by_source(self):
+        actor = self.run_with({"random_policy": False, "data_mix": {"actor": 0, "random": 0, "expert": 0}})
+        old = self.run_with({"random_policy": False})  # from before data_mix existed
+        expert = self.run_with({"random_policy": False, "data_mix": {"actor": 0, "random": 0, "expert": 1}})
+        mix = self.run_with({"random_policy": False, "data_mix": {"actor": 1, "random": 1, "expert": 1}})
+        random = self.run_with({"random_policy": True})
+        self.assertEqual(actor.label, "Vista local 5×5")
+        self.assertEqual(old.label, actor.label)
+        self.assertEqual(expert.label, "Vista local 5×5 · datos solo del experto")
+        self.assertEqual(random.label, "Vista local 5×5 · datos al azar")
+        self.assertEqual(mix.label, "Vista local 5×5 · datos mezclados: 33% actor, 33% azar, 33% experto")
+        self.assertEqual(len({r.label for r in (actor, expert, mix, random)}), 4)
+        # With a mix only the actor's own episodes are its training score.
+        self.assertEqual(mix.training_key, "episode/score_actor")
+        for other in (actor, old, expert, random):
+            self.assertEqual(other.training_key, "episode/score")
+        self.assertEqual(summarize(mix, 20)["Datos de entrenamiento"], mix.data_label)
+        self.assertEqual(summarize(actor, 20)["Datos de entrenamiento"], "actor")
+        self.assertIn("experto", expert.description)
+
+
 if __name__ == "__main__":
     unittest.main()

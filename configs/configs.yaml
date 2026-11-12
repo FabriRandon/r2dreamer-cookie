@@ -51,6 +51,9 @@ trainer:
   save_buffer_every: 1e4
   # Stop and save at this step, short of trainer.steps, to go on later.
   stop_at: null
+  # Stop and save after this many hours of this session (null: no limit),
+  # wherever the run is. Run the same command again to continue.
+  max_hours: null
   # Collect data with uniformly random actions instead of the actor, to
   # study the world model learned from undirected experience.
   random_policy: False

@@ -9,7 +9,7 @@ En `server/` están las herramientas; el código del entrenamiento es el mismo q
 | `server/setup.sh` | instala el entorno (`.venv`, Python 3.11) y lo revisa |
 | `server/check_env.py` | revisa GPU, ambiente de la galleta y `torch.compile` |
 | `server/run_gpu.sh` | envoltorio para `ts` (como `run_gpu.sh` del otro repo) |
-| `server/launch.py` | encola los 9 experimentos de la presentación con su configuración exacta |
+| `server/launch.py` | encola los experimentos (los 9 de la presentación y las runs con experto) con su configuración exacta |
 | `server/status.py` | tabla con el avance de todos los runs |
 | `server/sync_logs.sh` | (en tu PC) trae las métricas del servidor para analizarlas |
 
@@ -161,10 +161,10 @@ Si no tienes `gcc` o `Python.h`, agrégale `--no-compile`.
 ## 5. Lanzar los experimentos
 
 ```bash
-python3 server/launch.py list                       # los 9 experimentos
+python3 server/launch.py list                       # los experimentos disponibles
 python3 server/launch.py run exp3-normal --dry-run  # revisa la configuración y muestra el comando, sin encolar
 python3 server/launch.py run exp3-normal exp3-random
-python3 server/launch.py run all                    # los 9, uno tras otro según haya GPU libre
+python3 server/launch.py run all                    # todos menos local-expert (la prueba de un PC), uno tras otro según haya GPU libre
 ```
 
 | Nombre | Qué es | Pasos |
@@ -175,6 +175,7 @@ python3 server/launch.py run all                    # los 9, uno tras otro segú
 | `exp4-normal` / `exp4-random` | vista 3×3 | 500.000 / 750.000 |
 | `extra` | 5×5, repitiendo las experiencias con galleta y entropía ×10 | 500.000 |
 | `exp3-expert` | 5×5, **todos** los datos los juega el agente experto (`trainer.data_mix.expert=1`, ver [`experto.md`](experto.md)); el actor aprende de ellos y se evalúa solo | 1.000.000 |
+| `exp3-mix` | 5×5, datos **mezclados en partes iguales**: 1/3 de los episodios los juega el actor, 1/3 un agente al azar y 1/3 el experto (`trainer.data_mix.actor=1 random=1 expert=1`). Lo demás igual a `exp3-expert` | 1.000.000 |
 
 Son los pasos que dicen los notebooks (`exp3-expert` no tiene notebook: es la misma configuración de `exp3-random` cambiando quién recoge los datos); el README de `EXPERIMENTOS PRESENTACIÓN/` cuenta los pasos que finalmente se usaron en algunos runs. Cámbialos con `--steps N`.
 
@@ -259,10 +260,12 @@ y abre <http://localhost:6006>. Las pestañas útiles son las mismas de los note
 ## 8. Disco, RAM y GPU
 
 - **RAM:** con `buffer.storage_device=cpu` (lo normal) cada run usa ~11 GB de RAM para 500.000 pasos. Con varios runs a la vez, multiplica. Con `--buffer-device cuda` ese buffer va a la GPU (otros ~11 GB de VRAM).
-- **Disco:** cada guardado del buffer escribe `replay/` completo (~11 GB por run; reemplaza al anterior, pero mientras se escribe hay dos copias). `latest.pt` y los eventos de TensorBoard son mucho más chicos. Antes de lanzar los 9 con la configuración por defecto, mira `df -h ~` y tu cuota. Si falta espacio: `--save-buffer-every 250000`, o `--no-save-buffer` (un run reanudado vuelve a juntar sus datos desde cero). Al detener con `ts -k` igual se guarda el buffer, salvo con `--no-save-buffer`.
+- **Disco:** cada guardado del buffer escribe `replay/` completo (~11 GB por run; reemplaza al anterior, pero mientras se escribe hay dos copias). `latest.pt` y los eventos de TensorBoard son mucho más chicos. Antes de lanzar varios a la vez con la configuración por defecto, mira `df -h ~` y tu cuota. Si falta espacio: `--save-buffer-every 250000`, o `--no-save-buffer` (un run reanudado vuelve a juntar sus datos desde cero). Al detener con `ts -k` igual se guarda el buffer, salvo con `--no-save-buffer`.
 - Los runs de Colab se hicieron en una L4 (24 GB) y tardaron de 5 a 6 horas por 500.000 pasos con `torch.compile`. La prueba corta te da la velocidad de estas GPU.
 
 ## 9. Analizar en tu PC
+
+> Para llevarte un run completo (TensorBoard **y** el modelo aprendido) está la guía corta [`exportar.md`](exportar.md) y el script `server/export_run.sh`. Lo de abajo sirve para traer solo las métricas.
 
 En tu PC, trae solo lo liviano (métricas, estado, configuración, videos de TensorBoard); nunca los buffers ni los checkpoints:
 
@@ -298,7 +301,7 @@ ts -G 1 bash server/run_gpu.sh python watch.py \
 
 ## 10. Correr algo a mano
 
-Para un experimento distinto de los 9, usa el envoltorio con `ts`:
+Para un experimento distinto de los de la tabla, usa el envoltorio con `ts`:
 
 ```bash
 ts -G 1 bash server/run_gpu.sh python -u train.py env=cookie env.task=cookie_partial_hall5_view5 \
@@ -320,3 +323,32 @@ Usa **rutas absolutas** en `logdir` (`$HOME/...`): Hydra crea su carpeta de conf
 | `Nothing left to train: the run is at step N` | ya llegó a `--steps`; súbelo para extender |
 | no aparece `moviepy`/`ffmpeg` al grabar un video | `.venv/bin/pip install imageio-ffmpeg` (moviepy 1.0.3 la trae; revisa `check_env.py`) |
 | una prueba o run quedó a medias con procesos colgados | `pgrep -af train.py` (te muestra los tuyos; incluye los procesos del ambiente); mátalos con `kill <pid>` (SIGTERM, guarda) y solo como último recurso `kill -9` |
+
+## 12. Prueba local de una noche (el PC con GPU, sin servidor)
+
+`local-expert` es la run experta (vista 5×5, **solo** trayectorias del experto, evaluación con el actor) en tamaño reducido para una GPU de escritorio de 8 GB y 16 GB de RAM:
+
+| | `exp3-expert` (servidor) | `local-expert` |
+|---|---|---|
+| Pasos | 1.000.000 | **450.000** |
+| Buffer | 500.000 pasos (~11 GB de RAM) | 200.000 pasos (~4,3 GB de RAM) |
+| Límite de tiempo | el del job de Slurm | `trainer.max_hours=7.75` (para y guarda solo) |
+| Carpeta | `..._s0_expert` | `..._s0_expert_local` |
+
+**Cómo salen los 450.000 pasos.** Medido en una RTX 2060 SUPER con `torch.compile` y `train_ratio=128`: entre 17,8 y 21 pasos/s en régimen (5,6 sin compile). Más ~2 minutos de arranque, evaluaciones cada 25.000 pasos y 4 guardados del buffer (6 s cada uno), son entre 6,0 y 7,5 horas. Si la velocidad cae, `max_hours` detiene el run a las 7,75 h con una evaluación final y todo guardado, y se continúa repitiendo el comando.
+
+Hace falta un `.venv` con `Python.h` para el compile (`bash server/setup.sh` lo revisa; con un Python de conda o de `uv` los headers vienen incluidos).
+
+```bash
+cd ~/ipre/r2-dreamer-ipre/r2dreamer-cookie     # la carpeta del repo
+nohup python3 server/launch.py run local-expert --logroot ~/logdir/r2dreamer/local > ~/noche.log 2>&1 &
+```
+`launch.py` no encuentra `sbatch` ni `ts` en este PC y corre directo; el proceso de entrenamiento reemplaza al lanzador, así que el pid que imprime es el que hay que señalar. Mientras corre:
+
+```bash
+tail -f ~/noche.log                       # el log (cada 2 min una línea de progreso con pasos/s y tiempo restante)
+python3 server/status.py --root ~/logdir/r2dreamer/local
+nvidia-smi                                 # ~4 GB de VRAM + lo que use Windows
+kill -TERM <pid>                           # detener y guardar (no kill -9)
+```
+Para continuar después de detenerlo (o si el PC se apagó), repite el mismo comando. En Windows hay que desactivar la suspensión del equipo, y mantener abierta la terminal de WSL.

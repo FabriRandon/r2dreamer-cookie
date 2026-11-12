@@ -91,6 +91,9 @@ class OnlineTrainer:
         self._save_buffer_every = int(config.save_buffer_every)
         self._save_buffer = bool(config.save_buffer)
         self._stop_at = int(config.stop_at) if config.get("stop_at") is not None else None
+        # Wall-clock limit of this session, in hours (null: none). Where stop_at
+        # stops at a step, this stops after a time, whatever step the run is at.
+        self._max_seconds = None if config.get("max_hours") is None else 3600 * float(config.max_hours)
         self._action_repeat = config.action_repeat
         self._mix = DataMix(config.get("data_mix"), random_policy=bool(config.random_policy))
         self._progress_start = self._progress_start_step = self._progress_last = None
@@ -235,6 +238,10 @@ class OnlineTrainer:
             act[torch.as_tensor(expert_envs, device=act.device)] = F.one_hot(expert, act.shape[-1]).to(act.dtype)
         return act
 
+    def _out_of_time(self, started):
+        """Whether this session used up trainer.max_hours (it then stops and saves, like stop_at)."""
+        return self._max_seconds is not None and time.time() - started >= self._max_seconds
+
     def _report_progress(self, step, every=120):
         """Print how far the run is and how long it has left, every few minutes."""
         now = time.time()
@@ -271,6 +278,7 @@ class OnlineTrainer:
         step = self.replay_buffer.count() * self._action_repeat if start_step is None else start_step
         first_step = step
         end = self.steps if self._stop_at is None else min(self.steps, self._stop_at)
+        started = time.time()
         should_save = _every_from(self._save_every, step)
         should_save_buffer = _every_from(self._save_buffer_every, step)
         update_count = 0
@@ -306,7 +314,7 @@ class OnlineTrainer:
             ncols=100,
             disable=not sys.__stderr__.isatty(),
         )
-        while step < end and not self.stop_requested:
+        while step < end and not self.stop_requested and not self._out_of_time(started):
             # Evaluation
             if self._should_eval(step) and self.eval_episode_num > 0 and self.eval_envs is not None:
                 progress.set_postfix_str("evaluating")
@@ -414,8 +422,11 @@ class OnlineTrainer:
         # scoring the last stretch of training. Skipped when there was nothing
         # left to train, so rerunning a finished run does not evaluate again,
         # and when the run stops early, which should be quick.
-        if step >= self.steps and step > first_step and self.eval_episode_num > 0 and self.eval_envs is not None:
+        # (A run that ran out of trainer.max_hours is scored too: it may never reach the last step.)
+        if (step >= self.steps or self._out_of_time(started)) and step > first_step and self.eval_episode_num > 0 and self.eval_envs is not None:
             progress.set_postfix_str("evaluating")
             self.eval(agent, step)
         progress.close()
+        if self._out_of_time(started) and step < end:
+            tqdm.write(f"[{step}] Reached trainer.max_hours ({self._max_seconds / 3600:g} h): stopping to save.")
         return step

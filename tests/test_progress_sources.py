@@ -49,6 +49,19 @@ class SourcesTests(unittest.TestCase):
         text = summary(run_folder(EXPERT_ROWS + [{"step": 2448, "episode/eval_score": 0.0}]))
         self.assertIn("todavía no consigue galletas", text)
 
+    def test_a_mix_is_judged_by_the_actors_own_episodes(self):
+        rows = []
+        for i, (who, cookies) in enumerate([("expert", 21.0), ("random", 0.0), ("actor", 0.0)] * 4):
+            rows.append({"step": 816 * (i + 1), "episode/score": cookies, f"episode/score_{who}": cookies})
+        text = summary(run_folder(rows))
+        self.assertIn("varias fuentes", text)
+        self.assertIn("jugadas por el experto", text)
+        self.assertIn("21.00", text)  # the expert's average, shown apart
+        # The mixed average (7 per episode) must not read as the actor learning.
+        self.assertNotIn("el caso base está aprendiendo", text)
+        rows += [{"step": 816 * 13 + j, "episode/score": 5.0, "episode/score_actor": 5.0} for j in range(4)]
+        self.assertIn("el caso base está aprendiendo", summary(run_folder(rows)))
+
     def test_actor_runs_are_read_as_before(self):
         rows = [{"step": 816 * i, "episode/score": 20.0, "episode/score_actor": 20.0} for i in range(1, 4)]
         text = summary(run_folder(rows))

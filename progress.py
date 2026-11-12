@@ -147,6 +147,15 @@ def summarize(logdir, rows, status, task, window):
         else:
             print("El actor todavía no consigue galletas en la evaluación.")
         return takeoff, random_ref
+    if played - {"actor"}:
+        # Several players share the episodes: the average above mixes them, so
+        # show each one and judge the actor by its own episodes.
+        print(f"Los datos los juegan varias fuentes y el promedio de arriba las mezcla. Galletas por partida de cada una (últimas {window}):")
+        for name in sorted(played):
+            values = [value for _, value in series(rows, f"episode/score_{name}")[-window:]]
+            print(f"  jugadas por {SOURCES[name]:18s} {sum(values) / len(values):8.2f}")
+        values = [value for _, value in series(rows, "episode/score_actor")[-window:]]
+        score = sum(values) / len(values) if values else 0.0
     if score > 3 * random_ref.get("score", 0.0) + 0.1 or last_eval > 0:
         print("Ya consigue galletas por su cuenta: el caso base está aprendiendo.")
     elif takeoff and step < takeoff:
