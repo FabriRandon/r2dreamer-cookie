@@ -14,6 +14,7 @@ import rssm
 import tools
 from networks import Projector
 from optim import LaProp, clip_grad_agc_
+from plan2explore import Disagreement
 from tools import to_f32
 
 
@@ -30,6 +31,8 @@ class Dreamer(nn.Module):
         self.act_dim = act_space.n if hasattr(act_space, "n") else sum(act_space.shape)
         self.rep_loss = str(config.rep_loss)
         self.train_actor_critic = bool(config.train_actor_critic)
+        # Collect data with a Plan2Explore explorer instead of the actor.
+        self.plan2explore = bool(config.get("plan2explore", False))
 
         # World model components
         shapes = {k: tuple(v.shape) for k, v in obs_space.spaces.items()}
@@ -124,6 +127,21 @@ class Dreamer(nn.Module):
                 "ema_encoder": self._ema_encoder,
                 "ema_obs_proj": self._ema_obs_proj,
             })
+        if self.plan2explore:
+            # Built after everything else so the rest starts from the same
+            # random weights as a run without the explorer.
+            self.explore_actor = networks.MLPHead(config.actor, self.rssm.feat_size)
+            self.explore_value = networks.MLPHead(config.critic, self.rssm.feat_size)
+            self._explore_slow_value = copy.deepcopy(self.explore_value)
+            for param in self._explore_slow_value.parameters():
+                param.requires_grad = False
+            self.explore_return_ema = networks.ReturnEMA(device=self.device)
+            self.disag = Disagreement(config.disag, self.rssm.feat_size, self.act_dim, self.rssm.flat_stoch)
+            modules.update({
+                "explore_actor": self.explore_actor,
+                "explore_value": self.explore_value,
+                "disag": self.disag,
+            })
         # count number of parameters in each module
         for key, module in modules.items():
             if isinstance(module, nn.Parameter):
@@ -171,12 +189,17 @@ class Dreamer(nn.Module):
                 mix = self.slow_target_fraction
                 for v, s in zip(self.value.parameters(), self._slow_value.parameters()):
                     s.data.copy_(mix * v.data + (1 - mix) * s.data)
+                if self.plan2explore:
+                    for v, s in zip(self.explore_value.parameters(), self._explore_slow_value.parameters()):
+                        s.data.copy_(mix * v.data + (1 - mix) * s.data)
         self._slow_value_updates += 1
 
     def train(self, mode=True):
         super().train(mode)
         # slow_value should be always eval mode
         self._slow_value.train(False)
+        if self.plan2explore:
+            self._explore_slow_value.train(False)
         return self
 
     def clone_and_freeze(self):
@@ -238,6 +261,20 @@ class Dreamer(nn.Module):
             param_new.data = param_orig.data
             param_new.requires_grad_(False)
 
+        if self.plan2explore:
+            self._frozen_explore_actor = self._shared_frozen_copy(self.explore_actor)
+            self._frozen_explore_value = self._shared_frozen_copy(self.explore_value)
+            self._frozen_explore_slow_value = self._shared_frozen_copy(self._explore_slow_value)
+
+    @staticmethod
+    def _shared_frozen_copy(module):
+        """A copy that shares the module's weights but takes no gradient."""
+        frozen = copy.deepcopy(module)
+        for param_orig, param_new in zip(module.parameters(), frozen.parameters()):
+            param_new.data = param_orig.data
+            param_new.requires_grad_(False)
+        return frozen
+
     def to(self, *args, **kwargs):
         super().to(*args, **kwargs)
         # Re-establish shared memory after moving the model to a new device
@@ -261,7 +298,9 @@ class Dreamer(nn.Module):
         stoch, deter, _ = self._frozen_rssm.obs_step(prev_stoch, prev_deter, prev_action, embed, obs["is_first"])
         # (B, F)
         feat = self._frozen_rssm.get_feat(stoch, deter)
-        action_dist = self._frozen_actor(feat)
+        # The explorer collects the data; evaluation always uses the task actor.
+        actor = self._frozen_explore_actor if self.plan2explore and not eval else self._frozen_actor
+        action_dist = actor(feat)
         # (B, A)
         action = action_dist.mode if eval else action_dist.rsample()
         return action, TensorDict(
@@ -439,6 +478,9 @@ class Dreamer(nn.Module):
         losses["rew"] = torch.mean(-self.reward(feat).log_prob(to_f32(data["reward"])))
         cont = 1.0 - to_f32(data["is_terminal"])
         losses["con"] = torch.mean(-self.cont(feat).log_prob(cont))
+        if self.plan2explore:
+            losses["disag"], disag_metrics = self.disag.loss(feat, data["action"], post_stoch)
+            metrics.update(disag_metrics)
         # log
         metrics["dyn_entropy"] = torch.mean(self.rssm.get_dist(prior_logit).entropy())
         metrics["rep_entropy"] = torch.mean(self.rssm.get_dist(post_logit).entropy())
@@ -447,6 +489,8 @@ class Dreamer(nn.Module):
         # actor and critic, and skipping them keeps their gradients out of it.
         if self.train_actor_critic:
             self._actor_critic_loss(data, post_stoch, post_deter, losses, metrics)
+        if self.plan2explore:
+            self._explore_loss(post_stoch, post_deter, losses, metrics)
 
         total_loss = sum([v * self._loss_scales[k] for k, v in losses.items()])
         self._scaler.scale(total_loss).backward()
@@ -546,9 +590,59 @@ class Dreamer(nn.Module):
         metrics.update(tools.tensorstats(value, "value_replay"))
         metrics.update(tools.tensorstats(slow_value, "slow_value_replay"))
 
+    def _explore_loss(self, post_stoch, post_deter, losses, metrics):
+        """Train the explorer in imagination on the ensemble's disagreement.
+
+        Same objective as the task actor-critic, with the intrinsic reward in
+        place of the reward head. There is no replay-value loss: the replayed
+        reward is the cookie, which means nothing to the explorer.
+        """
+        # (B*T, S, K), (B*T, D)
+        start = (
+            post_stoch.reshape(-1, *post_stoch.shape[2:]).detach(),
+            post_deter.reshape(-1, *post_deter.shape[2:]).detach(),
+        )
+        imag_feat, imag_action = self._imagine(start, self.imag_horizon + 1, self._frozen_explore_actor)
+        imag_feat, imag_action = imag_feat.detach(), imag_action.detach()
+
+        # (B*T, T_imag, 1)
+        imag_reward, disag_metrics = self.disag.intrinsic_reward(imag_feat, imag_action)
+        imag_cont = self._frozen_cont(imag_feat).mean
+        imag_value = self._frozen_explore_value(imag_feat).mode()
+        imag_slow_value = self._frozen_explore_slow_value(imag_feat).mode()
+        disc = 1 - 1 / self.horizon
+        weight = torch.cumprod(imag_cont * disc, dim=1)
+        last = torch.zeros_like(imag_cont)
+        term = 1 - imag_cont
+        # (B*T, T_imag-1, 1)
+        ret = self._lambda_return(last, term, imag_reward, imag_value, imag_value, disc, self.lamb)
+        ret_offset, ret_scale = self.explore_return_ema(ret)
+        adv = (ret - imag_value[:, :-1]) / ret_scale
+
+        policy = self.explore_actor(imag_feat)
+        logpi = policy.log_prob(imag_action)[:, :-1].unsqueeze(-1)
+        entropy = policy.entropy()[:, :-1].unsqueeze(-1)
+        losses["explore_policy"] = torch.mean(
+            weight[:, :-1].detach() * -(logpi * adv.detach() + self.act_entropy * entropy)
+        )
+
+        imag_value_dist = self.explore_value(imag_feat)
+        tar_padded = torch.cat([ret, 0 * ret[:, -1:]], 1)
+        losses["explore_value"] = torch.mean(
+            weight[:, :-1].detach()
+            * (-imag_value_dist.log_prob(tar_padded.detach()) - imag_value_dist.log_prob(imag_slow_value.detach()))[
+                :, :-1
+            ].unsqueeze(-1)
+        )
+        metrics.update(disag_metrics)
+        metrics["explore_ret"] = torch.mean((ret - ret_offset) / ret_scale)
+        metrics["explore_intr_reward"] = torch.mean(imag_reward)
+        metrics["explore_action_entropy"] = torch.mean(entropy)
+
     @torch.no_grad()
-    def _imagine(self, start, imag_horizon):
-        """Roll out the policy in latent space."""
+    def _imagine(self, start, imag_horizon, actor=None):
+        """Roll out a policy in latent space: the task actor unless given another."""
+        actor = self._frozen_actor if actor is None else actor
         # (B, S, K), (B, D)
         feats = []
         actions = []
@@ -557,7 +651,7 @@ class Dreamer(nn.Module):
             # (B, F)
             feat = self._frozen_rssm.get_feat(stoch, deter)
             # (B, A)
-            action = self._frozen_actor(feat).rsample()
+            action = actor(feat).rsample()
             # Append feat and its corresponding sampled action at the same time step.
             feats.append(feat)
             actions.append(action)

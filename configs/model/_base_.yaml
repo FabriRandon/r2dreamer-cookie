@@ -9,6 +9,11 @@ device: ${device}
 rep_loss: "r2dreamer" # r2dreamer/dreamer/infonce/dreamerpro
 # Off when the actor does not collect the data (trainer.random_policy).
 train_actor_critic: True
+# Collect data with a Plan2Explore explorer instead of the actor (ported from
+# pedropalmav/her-dream). The explorer is rewarded where an ensemble of
+# one-step predictors disagrees; the task actor and critic still learn from
+# that data, and evaluation always uses them. Not with trainer.random_policy.
+plan2explore: False
 
 lr: 4e-5
 agc: 0.3
@@ -31,9 +36,29 @@ loss_scales:
   policy: 1.0
   value: 1.0
   repval: 0.3
+  disag: 1.0
+  explore_policy: 1.0
+  explore_value: 1.0
   swav: 1.0
   temp: 1.0
   norm: 1.0
+
+# Plan2Explore's ensemble, with her-dream's defaults.
+disag:
+  models: 8 # ensemble members, >= 2
+  intr_scale: 1.0 # multiplies the disagreement logged as train/disag_raw
+  head:
+    shape: null # set to the size of the stochastic state at build time
+    layers: 2
+    units: ${model.units}
+    act: ${model.act}
+    norm: ${model.norm}
+    device: ${device}
+    dist:
+      name: 'identity'
+    outscale: 1.0
+    symlog_inputs: False
+    name: 'disag'
 
 r2dreamer:
   lambd: 5e-4

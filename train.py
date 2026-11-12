@@ -21,6 +21,8 @@ torch.set_float32_matmul_precision("high")
 
 @hydra.main(version_base=None, config_path="configs", config_name="configs")
 def main(config):
+    if config.trainer.random_policy and config.model.plan2explore:
+        raise ValueError("trainer.random_policy and model.plan2explore both pick who collects the data; use one.")
     logdir = pathlib.Path(config.logdir).expanduser()
     logdir.mkdir(parents=True, exist_ok=True)
 
