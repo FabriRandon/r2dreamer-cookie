@@ -176,6 +176,7 @@ python3 server/launch.py run all                    # todos menos local-expert (
 | `extra` | 5×5, repitiendo las experiencias con galleta y entropía ×10 | 500.000 |
 | `exp3-expert` | 5×5, **todos** los datos los juega el agente experto (`trainer.data_mix.expert=1`, ver [`experto.md`](experto.md)); el actor aprende de ellos y se evalúa solo | 1.000.000 |
 | `exp3-mix` | 5×5, datos **mezclados en partes iguales**: 1/3 de los episodios los juega el actor, 1/3 un agente al azar y 1/3 el experto (`trainer.data_mix.actor=1 random=1 expert=1`). Lo demás igual a `exp3-expert` | 1.000.000 |
+| `exp4-mix` | igual a `exp3-mix` pero el agente **ve 3×3** y el experto también (`env.expert_view=3`): ya no ve una sala desde la entrada, sino que entra hasta el fondo y gira para mirar cada esquina (ver [`experto.md`](experto.md)). Los videos `train_video_*` y `eval_video` muestran todo el entorno con lo que ve el agente enmarcado en amarillo, un episodio de cada 10 por fuente (ver [`experto.md`](experto.md)) | 1.000.000 |
 
 Son los pasos que dicen los notebooks (`exp3-expert` no tiene notebook: es la misma configuración de `exp3-random` cambiando quién recoge los datos); el README de `EXPERIMENTOS PRESENTACIÓN/` cuenta los pasos que finalmente se usaron en algunos runs. Cámbialos con `--steps N`.
 

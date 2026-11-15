@@ -79,6 +79,15 @@ class OnlineTrainer:
         self.eval_every = int(config.eval_every)
         self.eval_episode_num = int(config.eval_episode_num)
         self.video_pred_log = bool(config.video_pred_log)
+        # Videos of the whole environment (the cookie task), instead of the agent's observation.
+        self._video_render = bool(config.get("video_render", False))
+        self._video_tile = int(config.get("video_tile_size", 16))
+        self._train_video_every = max(1, int(config.get("train_video_every", 1)))
+        if self._video_render:
+            envs = [e for e in (train_envs, eval_envs) if e is not None]
+            assert all(getattr(e, "can_frame", False) for e in envs), (
+                "trainer.video_render draws the whole grid, which only the cookie task can do"
+            )
         self.params_hist_log = bool(config.params_hist_log)
         self.batch_length = int(config.batch_length)
         batch_steps = int(config.batch_size * config.batch_length)
@@ -169,6 +178,8 @@ class OnlineTrainer:
         log_metrics = {}
         # cache is only used for video logging / open-loop prediction.
         cache = []
+        # Pictures of the whole environment 0, for the first episode (eval_video).
+        frames, recording = [], self._video_render
         agent_state = agent.get_initial_state(envs.env_num)
         # (B, A)
         act = agent_state["prev_action"].clone()
@@ -180,6 +191,8 @@ class OnlineTrainer:
             # already on agent.device.
             # (B, A), (B,)
             trans, step_done = envs.step(act.detach(), done)
+            if recording:
+                frames.append(self._frame(envs))
             # dict of (B, 1, *)
             trans = trans.to(agent.device, non_blocking=True)
             # (B,)
@@ -199,6 +212,8 @@ class OnlineTrainer:
                         log_metrics[key] = torch.zeros_like(returns)
                     log_metrics[key] += value[:, 0] * ~once_done
             once_done |= done
+            if recording and bool(once_done[0]):
+                recording = False  # the first episode of env 0 is complete
         # dict of (B, T, *)
         cache = torch.stack(cache, dim=1) if len(cache) else None
         self.logger.scalar("episode/eval_score", returns.mean())
@@ -207,7 +222,9 @@ class OnlineTrainer:
             if key == "log_success":
                 value = torch.clip(value, max=1.0)  # make sure 1.0 for success episode
             self.logger.scalar(f"episode/eval_{key[4:]}", value.mean())
-        if cache is not None and "image" in cache:
+        if frames:
+            self.logger.video("eval_video", np.stack(frames)[None])
+        elif cache is not None and "image" in cache:
             self.logger.video("eval_video", tools.to_np(cache["image"][:1]))
         if self.video_pred_log and cache is not None:
             initial = agent.get_initial_state(1)
@@ -222,6 +239,10 @@ class OnlineTrainer:
             )
         self.logger.write(train_step)
         agent.train()
+
+    def _frame(self, envs):
+        """A picture of the whole of environment 0, with what the agent sees lit up."""
+        return envs.frame(0, self._video_tile)
 
     def _take_over(self, agent, envs, act, source, done):
         """The actor's actions, replaced in the envs whose episode belongs to
@@ -272,7 +293,11 @@ class OnlineTrainer:
         or wherever stop_requested was set.
         """
         envs = self.train_envs
-        video_cache = []
+        # Frames of env 0's current episode while it is recorded, and how many episodes
+        # of each source env 0 has had (every train_video_every-th one is recorded).
+        video_cache, recording = [], False
+        video_episodes = np.zeros(len(SOURCES), dtype=np.int64)
+        several_sources = int((self._mix.probs > 0).sum()) > 1
         # A resumed run carries its own step: once the buffer is full its size
         # no longer tracks how many env steps have been taken.
         step = self.replay_buffer.count() * self._action_repeat if start_step is None else start_step
@@ -324,10 +349,13 @@ class OnlineTrainer:
             if done.any():
                 for i, d in enumerate(done):
                     if d and lengths[i] > 0:
-                        if i == 0 and len(video_cache) > 0:
-                            video = torch.stack(video_cache, axis=0)
-                            self.logger.video("train_video", tools.to_np(video[None]))
-                            video_cache = []
+                        if i == 0:
+                            if video_cache:
+                                # With a mix of sources the video says who played it.
+                                tag = f"train_video_{SOURCES[source[0]]}" if several_sources else "train_video"
+                                self.logger.video(tag, np.stack(video_cache)[None])
+                            video_cache, recording = [], False
+                            video_episodes[source[0]] += 1
                         self.logger.scalar("episode/score", returns[i])
                         self.logger.scalar("episode/length", lengths[i])
                         # The score by who played the episode, since a mix of
@@ -356,7 +384,11 @@ class OnlineTrainer:
             restarting = done.cpu().numpy()
             if restarting.any():
                 source[restarting] = self._mix.sample(int(restarting.sum()))
+                if restarting[0]:
+                    recording = video_episodes[source[0]] % self._train_video_every == 0
             trans, step_done = envs.step(act.detach(), done)
+            if recording and self._video_render:
+                video_cache.append(self._frame(envs))
             # dict of (B, 1, *)
             trans = trans.to(agent.device, non_blocking=True)
             # (B,)
@@ -379,8 +411,8 @@ class OnlineTrainer:
             trans["stoch"] = agent_state["stoch"]
             trans["deter"] = agent_state["deter"]
             trans["episode"] = episode_ids  # Don't lift dim
-            if "image" in trans:
-                video_cache.append(trans["image"][0])
+            if recording and not self._video_render and "image" in trans:
+                video_cache.append(tools.to_np(trans["image"][0]))
             # The log_* signals are only for the episode metrics; the model
             # never reads them, so they stay out of the replay buffer.
             log_keys = [key for key in trans.keys() if key.startswith("log_")]

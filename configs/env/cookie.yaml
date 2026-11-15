@@ -8,6 +8,9 @@ train_ratio: 512
 time_limit: 2088
 # Only turn and move; moving into the button presses it.
 press_on_move: True
+# Cells per side of the view the hand-written expert (trainer.data_mix.expert) decides
+# from: 5 is the original expert, 3 the one for an agent that only sees 3x3.
+expert_view: 5
 
 
 

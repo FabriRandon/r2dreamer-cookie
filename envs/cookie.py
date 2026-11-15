@@ -8,6 +8,9 @@ from PIL import Image
 # front of the agent.
 FORWARD, TOGGLE = 2, 5
 
+# Colour of the outline drawn around what the agent sees in the videos of the whole grid.
+VIEW_OUTLINE = (255, 200, 0)
+
 # Variants of the cookie domain (cookie_env.envs.ThreeRooms), mirroring the
 # ones used in the JAX DreamerV3 study this fork replicates. "full" shows the
 # whole grid; the others expose only the patch in front of the agent, which is
@@ -68,7 +71,7 @@ LOGS = ("presses", "cells", "button_room")
 class Cookie(gym.Env):
     metadata = {}
 
-    def __init__(self, task, size=(64, 64), seed=0, press_on_move=True):
+    def __init__(self, task, size=(64, 64), seed=0, press_on_move=True, expert_view=5):
         from cookie_env.envs import ThreeRooms
         from cookie_env.objects import Button
         from cookie_env.utils import spawner
@@ -123,6 +126,9 @@ class Cookie(gym.Env):
         self._view = view
         # The hand-written expert (envs/expert.py), built when first asked.
         self._expert = None
+        # The expert decides from a view of this many cells per side: 5 is the original
+        # one, 3 the one for an agent that only sees 3x3 (it has to walk to see a corner).
+        self._expert_view = int(expert_view)
         self._expert_action = None
 
     @property
@@ -144,20 +150,22 @@ class Cookie(gym.Env):
     def expert_action(self):
         """The action of the hand-written perfect policy for the current state.
 
-        The expert decides from the agent's own 5x5 view and remembers where it
-        is from the actions it asked for, so the caller must take exactly the
-        action returned, at every step of the episode (step() checks it).
-        A new episode restarts it.
+        The expert decides from a symbolic view of its own (the one MiniGrid builds before
+        it is drawn as an image) of `expert_view` x `expert_view` cells, whatever the
+        agent's view is. It remembers where it is from the actions it asked for, so the
+        caller must take exactly the action returned, at every step of the episode
+        (step() checks it). A new episode restarts it.
         """
         if self._expert is None:
-            from envs.expert import ExpertPolicy
+            from envs.expert import make_expert
 
             assert self._press_on_move, "the expert presses the button by moving into it (press_on_move)"
-            assert self._view >= 5, f"the expert needs a view of at least 5x5, this one is {self._view}x{self._view}"
             assert self._hallway == 5, f"the expert knows the map with hallways of 5 cells, not {self._hallway}"
-            self._expert = ExpertPolicy(hallway=self._hallway, seed=self._seed)
+            self._expert = make_expert(self._expert_view, hallway=self._hallway, seed=self._seed)
             self._expert.reset()
-        self._expert_action = self._expert.act(self._env.unwrapped.gen_obs()["image"])
+        env = self._env.unwrapped
+        grid, visible = env.gen_obs_grid(self._expert_view)
+        self._expert_action = self._expert.act(grid.encode(visible))
         return self._expert_action
 
     def step(self, action):
@@ -218,7 +226,26 @@ class Cookie(gym.Env):
         # vision it sees the whole grid, so nothing is shaded, although the
         # image the agent gets still has MiniGrid's shading of the view.
         env = self._env.unwrapped
-        return env.get_frame(highlight=not self._full_obs, tile_size=env.tile_size)
+        return self.frame(env.tile_size)
+
+    def frame(self, tile_size=16):
+        """The whole grid as an image of (height * tile_size, width * tile_size) pixels,
+        with what the agent sees lit up (the view_size x view_size cells in front of
+        it, turned like the agent). Used for the training and evaluation videos."""
+        env = self._env.unwrapped
+        frame = env.get_frame(highlight=not self._full_obs, tile_size=tile_size)
+        if not self._full_obs:
+            # MiniGrid only lightens the cells in view, which is faint on the black floor:
+            # outline the whole view window as well (the part inside the grid).
+            left, top, right, bottom = env.get_view_exts()
+            x0, y0 = max(left, 0) * tile_size, max(top, 0) * tile_size
+            x1, y1 = min(right, env.width) * tile_size, min(bottom, env.height) * tile_size
+            edge = max(1, tile_size // 8)
+            frame = frame.copy()
+            for rows, cols in ((slice(y0, y0 + edge), slice(x0, x1)), (slice(y1 - edge, y1), slice(x0, x1)),
+                               (slice(y0, y1), slice(x0, x0 + edge)), (slice(y0, y1), slice(x1 - edge, x1))):
+                frame[rows, cols] = VIEW_OUTLINE
+        return frame
 
     def _in_room(self, cell, radius=2):
         # ThreeRooms builds each room as the 5x5 square around its center, and

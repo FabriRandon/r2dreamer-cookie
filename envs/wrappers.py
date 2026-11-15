@@ -130,10 +130,14 @@ class Dtype(gym.Wrapper):
 
 class Expert(gym.Wrapper):
     """Lets whoever holds the outermost wrapper (the env worker process) ask the
-    environment for its hand-written expert's action."""
+    environment for its hand-written expert's action, and for a picture of the
+    whole grid (for videos)."""
 
     def reset(self):
         return self.env.reset()
 
     def expert_action(self):
         return self.env.unwrapped.expert_action()
+
+    def frame(self, tile_size=16):
+        return self.env.unwrapped.frame(tile_size)

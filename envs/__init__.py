@@ -26,6 +26,10 @@ def make_envs(config):
         if config.eval_episode_num > 0
         else None
     )
+    # Only the cookie environments can draw the whole grid (trainer.video_render).
+    train_envs.can_frame = suite == "cookie"
+    if eval_envs is not None:
+        eval_envs.can_frame = suite == "cookie"
     obs_space = train_envs.observation_space
     act_space = train_envs.action_space
     return train_envs, eval_envs, obs_space, act_space
@@ -101,7 +105,10 @@ def make_env(config, id):
     elif suite == "cookie":
         import envs.cookie as cookie
 
-        env = cookie.Cookie(task, config.size, seed=config.seed + id, press_on_move=config.press_on_move)
+        env = cookie.Cookie(
+            task, config.size, seed=config.seed + id, press_on_move=config.press_on_move,
+            expert_view=config.get("expert_view", 5),
+        )
         env = wrappers.OneHotAction(env)
     elif suite == "metaworld":
         import envs.metaworld as metaworld

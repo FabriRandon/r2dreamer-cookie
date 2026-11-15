@@ -88,6 +88,13 @@ class ParallelEnv:
         return np.array([p() for p in promise], dtype=np.int64)
 
 
+    def frame(self, index, tile_size=16):
+        """A picture of the whole of environment `index`, with what the agent sees lit
+        up (for the training and evaluation videos). `can_frame` tells whether the
+        environments have one: only the cookie ones do."""
+        return self.envs[index].frame(tile_size)()
+
+
 class Parallel:
     def __init__(self, constructor, strategy):
         self.worker = Worker(bind(self._respond, constructor), strategy, state=True)

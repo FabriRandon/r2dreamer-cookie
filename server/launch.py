@@ -8,6 +8,7 @@ Standard library only, so it runs with the server's system python3 (no venv):
     python3 server/launch.py run exp3-normal exp3-random   # enqueue with Slurm (sbatch) or, without it, `ts -G 1`
     python3 server/launch.py run exp3-expert               # 1M steps, data only from the expert
     python3 server/launch.py run exp3-mix                  # 1M steps, 1/3 actor + 1/3 random + 1/3 expert
+    python3 server/launch.py run exp4-mix                  # the same with a 3x3 view, videos of the whole grid
     python3 server/launch.py run all --smoke               # 1,500-step test of every experiment
 
 Every experiment mirrors a Colab notebook of "EXPERIMENTOS PRESENTACIÓN/"
@@ -64,13 +65,19 @@ EXPERIMENTS = {
     "exp3-random": dict(view=5, random=True, steps=1_000_000, what="vista 5x5, datos al azar"),
     "exp4-normal": dict(view=3, random=False, steps=500_000, what="vista 3x3, el actor junta los datos"),
     "exp4-random": dict(view=3, random=True, steps=750_000, what="vista 3x3, datos al azar"),
-    # Needs a view of at least 5x5 and the hallways of 5: what the expert knows.
+    # The expert needs the hallways of 5 and press_on_move (what it knows of the map); the
+    # agent's view does not matter. This one is the 5x5 expert (env.expert_view=5, the default).
     "exp3-expert": dict(view=5, random=False, expert=True, steps=1_000_000,
                         what="vista 5x5, SOLO trayectorias del experto"),
     # The same run with the three behaviours in equal parts: a third of the
     # episodes played by the actor, a third by a random agent, a third by the expert.
     "exp3-mix": dict(view=5, random=False, mix={"actor": 1, "random": 1, "expert": 1}, steps=1_000_000,
                      what="vista 5x5, datos mezclados: 1/3 actor, 1/3 azar, 1/3 experto"),
+    # exp3-mix with an agent that only sees 3x3, and an expert that only sees 3x3 as well (envs/expert.py,
+    # ExpertPolicy3x3: it walks to the back of a side room and turns to look at each corner).
+    # The training and evaluation videos show the whole grid with what the agent sees lit up.
+    "exp4-mix": dict(view=3, random=False, mix={"actor": 1, "random": 1, "expert": 1}, steps=1_000_000, video=True,
+                     expert_view=3, what="vista 3x3 (el experto también 3x3), datos en tercios, videos del entorno completo"),
     # A one-night test on a desktop GPU (8 GB, 16 GB of RAM): the same run with a smaller
     # replay buffer and a wall-clock limit as a safety net. See "Prueba local" in docs/servidor.md.
     "local-expert": dict(view=5, random=False, expert=True, steps=450_000, buffer=200_000, max_hours=7.75, suffix="local",
@@ -85,7 +92,7 @@ EXPERIMENTS = {
 SAME_AS_SAVED = (
     "env.task", "env.size", "model.rep_loss", "trainer.random_policy", "model.train_actor_critic",
     "buffer.reward_slices", "model.act_entropy", "seed",
-    "trainer.data_mix.actor", "trainer.data_mix.random", "trainer.data_mix.expert",
+    "trainer.data_mix.actor", "trainer.data_mix.random", "trainer.data_mix.expert", "env.expert_view",
 )
 
 # Runs inside the repo's venv: composes the config the way train.py will and
@@ -117,6 +124,8 @@ elif saved.exists():
         b = OmegaConf.to_container(b) if OmegaConf.is_config(b) else b
         if a is None and key.startswith("trainer.data_mix."):
             a = 0.0  # a run from before data_mix existed: the actor (or random_policy) played everything
+        if a is None and key == "env.expert_view":
+            a = 5  # a run from before the 3x3 expert existed: its expert saw 5x5
         if a != b:
             errors.append(f"la carpeta {cfg.logdir} ya tiene un run con {key}={a!r}, no {b!r}; usa otra --logroot o bórrala")
 elif (Path(cfg.logdir) / "latest.pt").exists():
@@ -169,6 +178,12 @@ def build(name, args):
     max_hours = getattr(args, "max_hours", None) or spec.get("max_hours")
     if max_hours:
         options["trainer.max_hours"] = max_hours  # stops cleanly, saving, after this long
+    if spec.get("expert_view"):
+        options["env.expert_view"] = spec["expert_view"]  # cells per side of the view the expert decides from
+    if spec.get("video"):
+        # Videos of the whole grid (large): one of every 10 training episodes of each source.
+        options["trainer.video_render"] = True
+        options["trainer.train_video_every"] = 10
     for source, weight in mix.items():
         # Who plays the episodes of the replay buffer; the evaluations (and
         # episode/eval_score) always use the learned actor.
@@ -202,6 +217,8 @@ def build(name, args):
         "buffer.reward_slices": spec.get("reward_slices", 0), "model.act_entropy": spec.get("act_entropy", 3e-4),
         "env.steps": options["env.steps"], "seed": args.seed, "model.rep_loss": "dreamer",
     }
+    if spec.get("expert_view"):
+        expected["env.expert_view"] = spec["expert_view"]
     if mix:
         expected.update({f"trainer.data_mix.{source}": mix.get(source, 0) for source in ("actor", "random", "expert")})
     if args.extra:  # the user knowingly overrides these

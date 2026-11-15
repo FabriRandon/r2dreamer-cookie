@@ -38,6 +38,13 @@ trainer:
   batch_length: ${batch_length}
   train_ratio: ${env.train_ratio}
   video_pred_log: False
+  # Draw train_video and eval_video as pictures of the WHOLE environment with
+  # what the agent sees lit up, instead of the observation the agent receives.
+  # Only for the cookie task. A video of that size is large, so train_video_every
+  # logs one of every N training episodes (counted per source of the data_mix).
+  video_render: False
+  video_tile_size: 16
+  train_video_every: 1
   params_hist_log: False
   update_log_every: 5e3
   action_repeat: ${env.action_repeat}

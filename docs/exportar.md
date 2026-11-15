@@ -78,7 +78,7 @@ pip install tensorboard
 tensorboard --logdir cookie_partial_hall5_view5_s0_expert
 ```
 
-Abre <http://localhost:6006>. Para comparar varios runs, ponlos en carpetas separadas dentro de una carpeta padre y usa el padre en `--logdir`. Las etiquetas útiles: `episode/eval_score` (galletas del actor, la medida principal), `episode/score_actor`, `episode/score_random` y `episode/score_expert` (los puntajes por quién jugó el episodio), `data/episodes_*` (el reparto de episodios) y las pérdidas `train/loss/*`. Sin TensorBoard: `python3 progress.py --logdir <carpeta>` y `python3 compare_runs.py --root <carpeta_padre> --out comparacion`.
+Abre <http://localhost:6006>. Para comparar varios runs, ponlos en carpetas separadas dentro de una carpeta padre y usa el padre en `--logdir`. Las etiquetas útiles: `episode/eval_score` (galletas del actor, la medida principal), `episode/score_actor`, `episode/score_random` y `episode/score_expert` (los puntajes por quién jugó el episodio), y en Images los videos `eval_video` y `train_video_actor/random/expert` (en los runs con `video_render`, el entorno completo con lo que ve el agente enmarcado), `data/episodes_*` (el reparto de episodios) y las pérdidas `train/loss/*`. Sin TensorBoard: `python3 progress.py --logdir <carpeta>` y `python3 compare_runs.py --root <carpeta_padre> --out comparacion`.
 
 ## 4. Probar el modelo de mundo aprendido
 

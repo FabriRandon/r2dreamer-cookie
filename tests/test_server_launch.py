@@ -64,7 +64,7 @@ def same(a, b):
 
 class LaunchTests(unittest.TestCase):
     def test_every_experiment_has_a_notebook_except_the_expert_run(self):
-        self.assertEqual(set(launch.EXPERIMENTS) - {"exp3-expert", "exp3-mix", "local-expert"}, set(NOTEBOOKS))
+        self.assertEqual(set(launch.EXPERIMENTS) - {"exp3-expert", "exp3-mix", "exp4-mix", "local-expert"}, set(NOTEBOOKS))
 
     def test_the_expert_run_is_the_random_run_with_the_expert_collecting(self):
         mine, expected, logdir, folder = launch.build("exp3-expert", args_for())
@@ -81,7 +81,7 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(expected["trainer.data_mix.actor"], 0)
         # The other experiments do not touch data_mix.
         for name in launch.EXPERIMENTS:
-            if name not in ("exp3-expert", "exp3-mix", "local-expert"):
+            if name not in ("exp3-expert", "exp3-mix", "exp4-mix", "local-expert"):
                 self.assertNotIn("trainer.data_mix.expert", as_dict(launch.build(name, args_for())[0]))
 
     def test_matches_the_notebooks(self):
@@ -124,6 +124,26 @@ class LaunchTests(unittest.TestCase):
         differs = {k for k in set(mine) | set(expert) if k != "logdir" and mine.get(k) != expert.get(k)}
         self.assertEqual(differs, {"trainer.data_mix.actor", "trainer.data_mix.random"})
         self.assertEqual([expected[f"trainer.data_mix.{k}"] for k in ("actor", "random", "expert")], [1, 1, 1])
+
+    def test_exp4_mix_is_exp3_mix_with_a_3x3_view_and_whole_grid_videos(self):
+        mine, expected, logdir, folder = launch.build("exp4-mix", args_for())
+        mine = as_dict(mine)
+        mix3 = as_dict(launch.build("exp3-mix", args_for())[0])
+        self.assertEqual(folder, "cookie_partial_hall5_view3_s0_mix")
+        self.assertEqual(expected["env.task"], "cookie_partial_hall5_view3")
+        differs = {k for k in set(mine) | set(mix3) if k != "logdir" and mine.get(k) != mix3.get(k)}
+        # The view, the expert's own view and the videos: nothing else about the training changes.
+        self.assertEqual(differs, {"env.task", "env.expert_view", "trainer.video_render", "trainer.train_video_every"})
+        self.assertEqual(mine["env.expert_view"], "3")
+        self.assertEqual(expected["env.expert_view"], 3)
+        for name in launch.EXPERIMENTS:
+            if name != "exp4-mix":
+                self.assertNotIn("env.expert_view", as_dict(launch.build(name, args_for())[0]))
+        self.assertEqual((mine["trainer.video_render"], mine["trainer.train_video_every"]), ("True", "10"))
+        self.assertEqual([mine[f"trainer.data_mix.{k}"] for k in ("actor", "random", "expert")], ["1", "1", "1"])
+        for name in launch.EXPERIMENTS:
+            if name != "exp4-mix":
+                self.assertNotIn("trainer.video_render", as_dict(launch.build(name, args_for())[0]))
 
     def test_local_run_fits_a_desktop_and_a_night(self):
         mine, expected, logdir, folder = launch.build("local-expert", args_for())
