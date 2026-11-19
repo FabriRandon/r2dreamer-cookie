@@ -39,6 +39,28 @@ Cada notebook guarda el modelo, el buffer y las métricas en Google Drive, en la
 
 Para ver si el actor aprendió, mira `episode/eval_score` en TensorBoard: son las galletas por partida en las evaluaciones. Un agente al azar consigue cerca de 0,05 y el máximo posible en este mapa es 23.
 
+## Vista 3×3 con obstáculos
+
+El agente sigue en el mapa `hall5` y recibe una imagen RGB de su vista parcial de 3×3 casillas. `env.obstacles=none` usa el mapa original. `same` coloca un cuadrado verde sólido en cada habitación lateral y `distinct` reemplaza el de la derecha por un triángulo verde. Ambos bloquean una casilla y ocupan las mismas posiciones en las dos variantes. Desde el inicio, la ruta más corta pasando por el botón cuesta 23 acciones para cualquiera de las cuatro esquinas en las tres condiciones.
+
+Desde la raíz del repositorio, esta comparación usa los parámetros de entrenamiento del experimento 4 normal y guarda un run por condición y semilla.
+
+```bash
+SEMILLA=0
+for modo in none same distinct; do
+  .venv/bin/python train.py env=cookie env.task=cookie_partial_hall5_view3 \
+    env.obstacles="$modo" env.steps=500000 env.train_ratio=128 env.eval_episode_num=5 \
+    seed="$SEMILLA" model.rep_loss=dreamer trainer.random_policy=False \
+    trainer.eval_every=25000 trainer.update_log_every=2500 trainer.video_pred_log=True \
+    trainer.save_buffer_every=100000 buffer.max_size=500000 buffer.storage_device=cpu \
+    logdir="logdir/cookie-obstacles/${modo}_s${SEMILLA}" || break
+done
+```
+
+Si usas el notebook 4 normal en Colab, usa una copia del repositorio que incluya estos cambios. Al final de la celda 6 añade `OPCIONES += " env.obstacles=same"` y `LOGDIR += "_obstacles_same"`, ajustando ambas líneas para cada condición.
+
+Compara `episode/eval_score`, `episode/eval_presses`, `episode/eval_cookie_visible` y `episode/eval_cookie_in_front`. Las dos últimas cuentan decisiones tomadas con la galleta dentro de la vista y justo delante, respectivamente. Si pulsa el botón pero la galleta casi nunca entra en su vista, la dificultad aparece antes de la recogida. Si tiene muchas oportunidades con la galleta justo delante pero recoge pocas, revisa en los videos qué acción elige en esos pasos. Para comparar condiciones, repite las tres con las mismas semillas adicionales.
+
 ## Videos
 
 `videos_presentacion.ipynb` no necesita GPU. Monta el Drive donde están los runs y muestra el video más reciente de cada uno. Si alguno es anterior al último checkpoint, cambia `CREAR_VIDEOS` a `True` en la sección 4 para crearlo de nuevo; quedan en `galleta/presentacion/videos/`.

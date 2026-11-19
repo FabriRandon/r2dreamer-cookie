@@ -8,6 +8,8 @@ train_ratio: 512
 time_limit: 2088
 # Only turn and move; moving into the button presses it.
 press_on_move: True
+# hall5 only: none, same (two squares), or distinct (square and triangle).
+obstacles: none
 
 seed: ${seed}
 device: ${device}

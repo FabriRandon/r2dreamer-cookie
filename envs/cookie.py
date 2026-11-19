@@ -23,7 +23,7 @@ VARIANTS = {
 
 
 
-def _shorter_hallways(hallway, fixed_corner=False):
+def _shorter_hallways(hallway, fixed_corner=False, obstacles="none"):
     """ThreeRooms with hallways of `hallway` cells instead of 11.
 
     The three 5x5 rooms stay as they are, and the cookie still appears in an
@@ -34,12 +34,33 @@ def _shorter_hallways(hallway, fixed_corner=False):
     """
     from cookie_env.envs import ThreeRooms
     from cookie_env.objects import Button
+    from minigrid.core.constants import COLORS
     from minigrid.core.grid import Grid
+    from minigrid.core.world_object import Wall
+    from minigrid.utils.rendering import fill_coords, point_in_rect, point_in_triangle
 
     # The hallways meet where the agent starts; the button's room sits
     # `hallway` cells above, and the side rooms as far to each side.
     cx = cy = hallway + 3
     corners = [(x, y) for x in (cx - hallway - 2, cx + hallway + 2) for y in (cy - 2, cy + 2)]
+
+    class Obstacle(Wall):
+        def __init__(self, triangle):
+            super().__init__("green")
+            self.triangle = triangle
+
+        def encode(self):
+            # Grid.render_tile caches by encoding, so each shape needs its own key.
+            kind, color, _ = super().encode()
+            return kind, color, int(self.triangle)
+
+        def render(self, img):
+            shape = (
+                point_in_triangle((0.5, 0.08), (0.9, 0.88), (0.1, 0.88))
+                if self.triangle
+                else point_in_rect(0.22, 0.78, 0.22, 0.78)
+            )
+            fill_coords(img, shape, COLORS[self.color])
 
     class Rooms(ThreeRooms):
         def _gen_grid(self, width, height):
@@ -50,6 +71,9 @@ def _shorter_hallways(hallway, fixed_corner=False):
             self._generate_hallway(cx - hallway, cy, cx + hallway, cy)
             self._generate_hallway(cx, cy - hallway, cx, cy)
             self.put_obj(Button("blue", self.spawn_cookie), cx, cy - hallway)
+            if obstacles != "none":
+                self.put_obj(Obstacle(triangle=False), cx - hallway, cy - 1)
+                self.put_obj(Obstacle(triangle=obstacles == "distinct"), cx + hallway, cy + 1)
             self.agent_pos = self.agent_start_pos
             self.agent_dir = self.agent_start_dir
 
@@ -61,14 +85,15 @@ def _shorter_hallways(hallway, fixed_corner=False):
 
 # Per-step signals the trainer adds up over each episode and logs as
 # episode/<name>, so a run shows progress long before the agent gets cookies:
-# button presses, distinct cells visited, and steps spent in the button's room.
-LOGS = ("presses", "cells", "button_room")
+# The two cookie signals count decisions taken with the cookie in view or
+# directly ahead, where a forward action would collect it.
+LOGS = ("presses", "cells", "button_room", "cookie_visible", "cookie_in_front")
 
 
 class Cookie(gym.Env):
     metadata = {}
 
-    def __init__(self, task, size=(64, 64), seed=0, press_on_move=True):
+    def __init__(self, task, size=(64, 64), seed=0, press_on_move=True, obstacles="none"):
         from cookie_env.envs import ThreeRooms
         from cookie_env.objects import Button
         from cookie_env.utils import spawner
@@ -85,12 +110,16 @@ class Cookie(gym.Env):
         assert view % 2 == 1 and view >= 3, f"the view must be odd and at least 3, got {view}"
         variant, _, suffix = task.partition("_")
         assert variant in VARIANTS, (variant, tuple(VARIANTS))
+        if obstacles not in ("none", "same", "distinct"):
+            raise ValueError(f"Unknown cookie obstacles mode: {obstacles!r}")
+        if obstacles != "none" and suffix != "hall5":
+            raise ValueError("Cookie obstacles require the hall5 layout")
         options = dict(VARIANTS[variant])
         full_obs = options.pop("full_obs")
         rooms = ThreeRooms
         if suffix.startswith("hall"):
             fixed_corner = options.pop("spawner", None) == "deterministic_corner"
-            rooms, layout = _shorter_hallways(int(suffix[len("hall"):]), fixed_corner)
+            rooms, layout = _shorter_hallways(int(suffix[len("hall"):]), fixed_corner, obstacles)
             options.update(layout)
         else:
             if "spawner" in options:
@@ -138,7 +167,12 @@ class Cookie(gym.Env):
 
     def step(self, action):
         env = self._env.unwrapped
-        facing_button = isinstance(env.grid.get(*env.front_pos), self._button)
+        front_pos = tuple(env.front_pos)
+        facing_button = isinstance(env.grid.get(*front_pos), self._button)
+        cookie_pos = env.cookie.cur_pos
+        cookie_in_front = cookie_pos is not None and tuple(cookie_pos) == front_pos
+        # ThreeRooms renders the entire view patch, including cells behind walls.
+        cookie_visible = cookie_pos is not None and (self._full_obs or env.in_view(*cookie_pos))
         if self._press_on_move and action == FORWARD and facing_button:
             action = TOGGLE
         obs, reward, terminated, truncated, info = self._env.step(action)
@@ -151,7 +185,13 @@ class Cookie(gym.Env):
             "is_first": False,
             "is_last": done,
             "is_terminal": terminated,
-            **self._logs(presses=action == TOGGLE and facing_button, cells=new_cell, button_room=self._in_room(cell)),
+            **self._logs(
+                presses=action == TOGGLE and facing_button,
+                cells=new_cell,
+                button_room=self._in_room(cell),
+                cookie_visible=cookie_visible,
+                cookie_in_front=cookie_in_front,
+            ),
         }
         return obs, np.float32(reward), done, info
 
@@ -177,7 +217,13 @@ class Cookie(gym.Env):
             "is_last": False,
             "is_terminal": False,
             # The starting cell counts as visited.
-            **self._logs(presses=False, cells=True, button_room=self._in_room(cell)),
+            **self._logs(
+                presses=False,
+                cells=True,
+                button_room=self._in_room(cell),
+                cookie_visible=False,
+                cookie_in_front=False,
+            ),
         }
 
     def render(self):
