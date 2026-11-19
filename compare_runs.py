@@ -71,6 +71,10 @@ class Run:
         return "episode/score_actor" if "actor" in sources and len(sources) > 1 else "episode/score"
 
     @property
+    def with_obstacles(self):
+        return bool(number(self.config.get("env", {}).get("obstacles")))
+
+    @property
     def label(self):
         seed = self.config.get("seed")
         sampler = number(self.config.get("buffer", {}).get("reward_slices"))
@@ -84,6 +88,8 @@ class Run:
             label += " + más incentivo a explorar" if entropy > 0.0003 else " + menos incentivo a explorar"
         if self.data_label:
             label += f" · {self.data_label}"
+        if self.with_obstacles:
+            label += " · con obstáculos"
         if seed not in (0, None):
             label += f" · semilla {seed}"
         return label
@@ -107,7 +113,8 @@ class Run:
         data = ""
         if self.data_label:
             data = f" Los episodios de entrenamiento: {self.data_label.replace('datos ', '', 1)}."
-        return f"{view} {replay}{exploration}{data}"
+        obstacles = " Hay un obstáculo sólido en cada sala, distinto en cada partida." if self.with_obstacles else ""
+        return f"{view} {replay}{exploration}{data}{obstacles}"
 
     def points(self, key):
         return [(row["step"], row[key]) for row in self.rows if key in row]

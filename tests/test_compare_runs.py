@@ -222,6 +222,14 @@ class DataSourceTests(unittest.TestCase):
         self.assertEqual(summarize(actor, 20)["Datos de entrenamiento"], "actor")
         self.assertIn("experto", expert.description)
 
+    def test_obstacles_show_in_the_label(self):
+        plain = self.run_with({"random_policy": False})
+        plain.config["env"]["obstacles"] = 1
+        self.assertEqual(plain.label, "Vista local 5×5 · con obstáculos")
+        self.assertIn("obstáculo", plain.description)
+        plain.config["env"]["obstacles"] = 0
+        self.assertEqual(plain.label, "Vista local 5×5")
+
 
 if __name__ == "__main__":
     unittest.main()

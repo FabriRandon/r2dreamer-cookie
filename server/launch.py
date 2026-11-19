@@ -9,6 +9,8 @@ Standard library only, so it runs with the server's system python3 (no venv):
     python3 server/launch.py run exp3-expert               # 1M steps, data only from the expert
     python3 server/launch.py run exp3-mix                  # 1M steps, 1/3 actor + 1/3 random + 1/3 expert
     python3 server/launch.py run exp4-mix                  # the same with a 3x3 view, videos of the whole grid
+    python3 server/launch.py run exp5-mix                  # exp4-mix with a solid obstacle in each room, new every episode
+    python3 server/launch.py run exp3-obstaculos           # 5x5 view, obstacles, only Dreamer collects the data
     python3 server/launch.py run all --smoke               # 1,500-step test of every experiment
 
 Every experiment mirrors a Colab notebook of "EXPERIMENTOS PRESENTACIÓN/"
@@ -78,6 +80,15 @@ EXPERIMENTS = {
     # The training and evaluation videos show the whole grid with what the agent sees lit up.
     "exp4-mix": dict(view=3, random=False, mix={"actor": 1, "random": 1, "expert": 1}, steps=1_000_000, video=True,
                      expert_view=3, what="vista 3x3 (el experto también 3x3), datos en tercios, videos del entorno completo"),
+    # exp4-mix with solid abstract obstacles: one in each room, of a random shape and colour and in a random
+    # free place, drawn again every episode (envs/obstacles.py). Both experts walk around them.
+    "exp5-mix": dict(view=3, random=False, mix={"actor": 1, "random": 1, "expert": 1}, steps=1_000_000, video=True,
+                     expert_view=3, obstacles=1, suffix="obstaculos",
+                     what="exp4-mix con un obstáculo sólido por sala, distinto en cada episodio"),
+    # Only Dreamer plays (no random agent, no expert: the actor collects all the data, as in exp3-normal), with
+    # a 5x5 view and the solid obstacles of exp5-mix. Videos of the whole grid, like the mix runs.
+    "exp3-obstaculos": dict(view=5, random=False, steps=1_000_000, video=True, obstacles=1, suffix="obstaculos",
+                            what="vista 5x5, SOLO Dreamer, con un obstáculo sólido por sala (nuevo en cada episodio)"),
     # A one-night test on a desktop GPU (8 GB, 16 GB of RAM): the same run with a smaller
     # replay buffer and a wall-clock limit as a safety net. See "Prueba local" in docs/servidor.md.
     "local-expert": dict(view=5, random=False, expert=True, steps=450_000, buffer=200_000, max_hours=7.75, suffix="local",
@@ -93,6 +104,7 @@ SAME_AS_SAVED = (
     "env.task", "env.size", "model.rep_loss", "trainer.random_policy", "model.train_actor_critic",
     "buffer.reward_slices", "model.act_entropy", "seed",
     "trainer.data_mix.actor", "trainer.data_mix.random", "trainer.data_mix.expert", "env.expert_view",
+    "env.obstacles",
 )
 
 # Runs inside the repo's venv: composes the config the way train.py will and
@@ -126,6 +138,8 @@ elif saved.exists():
             a = 0.0  # a run from before data_mix existed: the actor (or random_policy) played everything
         if a is None and key == "env.expert_view":
             a = 5  # a run from before the 3x3 expert existed: its expert saw 5x5
+        if a is None and key == "env.obstacles":
+            a = 0  # a run from before obstacles existed: none
         if a != b:
             errors.append(f"la carpeta {cfg.logdir} ya tiene un run con {key}={a!r}, no {b!r}; usa otra --logroot o bórrala")
 elif (Path(cfg.logdir) / "latest.pt").exists():
@@ -180,6 +194,8 @@ def build(name, args):
         options["trainer.max_hours"] = max_hours  # stops cleanly, saving, after this long
     if spec.get("expert_view"):
         options["env.expert_view"] = spec["expert_view"]  # cells per side of the view the expert decides from
+    if spec.get("obstacles"):
+        options["env.obstacles"] = spec["obstacles"]  # solid obstacles per room, new at every episode
     if spec.get("video"):
         # Videos of the whole grid (large): one of every 10 training episodes of each source.
         options["trainer.video_render"] = True
@@ -219,6 +235,8 @@ def build(name, args):
     }
     if spec.get("expert_view"):
         expected["env.expert_view"] = spec["expert_view"]
+    if spec.get("obstacles"):
+        expected["env.obstacles"] = spec["obstacles"]
     if mix:
         expected.update({f"trainer.data_mix.{source}": mix.get(source, 0) for source in ("actor", "random", "expert")})
     if args.extra:  # the user knowingly overrides these

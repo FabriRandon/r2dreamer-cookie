@@ -4,6 +4,8 @@
     python demo_expert.py --expert-view 3                 # the 3x3 expert, as it plays -> expert_demo_3x3/
     python demo_expert.py --expert-view 3 --showcase      # the 4 ways a cycle can go, one after another
     python demo_expert.py --expert-view 3 --stats 40      # only numbers, 40 full episodes
+    python demo_expert.py --expert-view 3 --obstacles 1   # with a solid obstacle in every room (envs/obstacles.py)
+    python demo_expert.py --expert-view 3 --obstacle-showcase   # three layouts that get in its way, on purpose
 
 Writes <out>/expert.mp4 and expert.gif (the whole grid with what the agent sees lit up and
 outlined in yellow, and on top the step, cookies, what the expert is doing and its action) and
@@ -56,15 +58,25 @@ class Script:
         return queue.pop(0) if queue else self._random.sample(population, k)
 
 
-def run_episode(env, policy, steps, view, check=True, forced=(), cases=()):
+def run_episode(env, policy, steps, view, check=True, forced=(), cases=(), layout=None, stop_after_cycles=None):
     """Run one episode and return its frames and a log of every step.
 
     `forced` are the corners (relative to the start) where the cookie is put after the
-    1st, 2nd... press, instead of the random ones; `cases` their descriptions."""
+    1st, 2nd... press, instead of the random ones; `cases` their descriptions. `layout` is a list
+    of (cell, shape, colour) obstacles, relative to the start, that replace the random ones.
+    With `stop_after_cycles` it stops once that many cycles (button to button) are complete."""
     env.reset()
     policy.reset()
     inner = env._env.unwrapped
     origin = tuple(int(v) for v in inner.agent_pos)
+    if layout is not None:
+        from envs.obstacles import Obstacle
+
+        for _, cell, *_ in env._placed:
+            inner.grid.set(*cell, None)
+        env._placed = []
+        for (x, y), shape, colour in layout:
+            inner.put_obj(Obstacle(shape, colour), origin[0] + x, origin[1] + y)
     frames, log, cookies, presses = [env.render()], [], 0, 0
     for t in range(steps):
         action = policy.act(symbolic_view(env, view))
@@ -85,7 +97,7 @@ def run_episode(env, policy, steps, view, check=True, forced=(), cases=()):
         log.append(dict(t=t + 1, action=action, phase=phase, status=status, reward=float(reward), pressed=pressed,
                         cookies=cookies, case=case))
         frames.append(env.render())
-        if done:
+        if done or (stop_after_cycles and presses > stop_after_cycles):
             break
     return frames, log
 
@@ -144,6 +156,17 @@ def save_keyframes(frames, log, path, columns=6):
     sheet.save(path)
 
 
+# Layouts of obstacles (cell relative to the start, shape, colour) that get in the 3x3 expert's way, with
+# the corner the cookie is put in and the order in which it looks into the rooms and at the corners.
+OBSTACLE_SHOWCASE = [
+    dict(case="Obstáculos 1 de 3: uno delante del botón y otro en el camino a la sala este", corner=(7, -2), rooms=(1, -1),
+         verticals=[("up", "down")], layout=[((0, -4), "star", "yellow"), ((4, 0), "diamond", "white"), ((-3, 1), "square", "green")]),
+    dict(case="Obstáculos 2 de 3: uno justo donde se para a mirar, al fondo de la sala", corner=(7, 2), rooms=(1, -1),
+         verticals=[("up", "down")], layout=[((1, -5), "plus", "magenta"), ((6, 0), "cross", "yellow"), ((-5, 0), "star", "white")]),
+    dict(case="Obstáculos 3 de 3: uno en la fila del medio de cada sala lateral", corner=(-7, 2), rooms=(1, -1),
+         verticals=[("up", "down"), ("down", "up")], layout=[((-1, -4), "diamond", "green"), ((5, 0), "square", "magenta"), ((-4, 0), "cross", "white")]),
+]
+
 # The four ways a cycle of the 3x3 expert can go, with the corner the cookie is put in, the
 # order in which the expert looks into the rooms and at the corners of each room it enters.
 SHOWCASE = [
@@ -163,13 +186,16 @@ def main():
     parser.add_argument("--out", default=None, help="folder (default expert_demo, or expert_demo_3x3)")
     parser.add_argument("--fps", type=int, default=None)
     parser.add_argument("--showcase", action="store_true", help="3x3 only: force the 4 ways a cycle can go, one per cycle")
+    parser.add_argument("--obstacles", type=int, default=0, help="solid obstacles per room (envs/obstacles.py), new every episode")
+    parser.add_argument("--obstacle-showcase", action="store_true", help="3x3 only: three layouts of obstacles that get in its way")
     parser.add_argument("--stats", type=int, default=0, help="run this many full episodes and print statistics, nothing else")
     parser.add_argument("--time-limit", type=int, default=2088)
     args = parser.parse_args()
     view = args.expert_view
-    assert not args.showcase or view == 3, "--showcase is for the 3x3 expert"
+    assert not (args.showcase or args.obstacle_showcase) or view == 3, "--showcase and --obstacle-showcase are for the 3x3 expert"
+    obstacles = args.obstacles or int(args.obstacle_showcase)
 
-    env = Cookie(args.task or f"partial_hall5_view{view}", (64, 64), seed=args.seed, expert_view=view)
+    env = Cookie(args.task or f"partial_hall5_view{view}", (64, 64), seed=args.seed, expert_view=view, obstacles=obstacles)
     policy = make_expert(view, hallway=5, seed=args.seed)
 
     if args.stats:
@@ -186,9 +212,28 @@ def main():
         print("cycle lengths (steps: how many): " + ", ".join(f"{k}: {v}" for k, v in sorted(collections.Counter(gaps).items())))
         return
 
-    out = pathlib.Path(args.out or ("expert_demo" if view == 5 else "expert_demo_3x3"))
+    out = pathlib.Path(args.out or ("expert_demo" if view == 5 else "expert_demo_3x3") + ("_obstaculos" if obstacles else ""))
     out.mkdir(exist_ok=True)
     kwargs, name = {}, "expert"
+    if args.obstacle_showcase:
+        # One short episode per layout (forced obstacles, cookie corner and decisions), one after another.
+        import imageio.v2 as imageio
+
+        captioned = []
+        for case in OBSTACLE_SHOWCASE:
+            policy._rng = Script([case["rooms"]], case["verticals"])
+            frames, entries = run_episode(env, policy, 400, view, forced=[case["corner"]], cases=[case["case"]] * 3,
+                                          layout=case["layout"], stop_after_cycles=1)
+            for entry in entries:
+                entry["case"] = case["case"]
+            captioned.append(annotate(frames[0], None))
+            captioned += [annotate(frame, entry) for frame, entry in zip(frames[1:], entries)]
+        fps = args.fps or 6
+        imageio.mimsave(out / "expert_obstacle_showcase.mp4", captioned, fps=fps, macro_block_size=1)
+        imageio.mimsave(out / "expert_obstacle_showcase.gif", captioned, duration=1000 / fps, loop=0)
+        print(f"{len(captioned)} frames, {len(OBSTACLE_SHOWCASE)} layouts")
+        print(f"wrote {out}/expert_obstacle_showcase.mp4 and .gif")
+        return
     if args.showcase:
         policy._rng = Script([c["rooms"] for c in SHOWCASE], [v for c in SHOWCASE for v in c["verticals"]])
         kwargs = dict(forced=[c["corner"] for c in SHOWCASE], cases=[c["case"] for c in SHOWCASE])

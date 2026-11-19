@@ -35,6 +35,7 @@ EPISODE_KEYS = {
     "presses": "veces que aprieta el botón",
     "cells": "casillas distintas visitadas",
     "button_room": "pasos en el cuarto del botón",
+    "bumps": "choques con obstáculos",
 }
 
 

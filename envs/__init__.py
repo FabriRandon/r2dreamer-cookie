@@ -107,7 +107,7 @@ def make_env(config, id):
 
         env = cookie.Cookie(
             task, config.size, seed=config.seed + id, press_on_move=config.press_on_move,
-            expert_view=config.get("expert_view", 5),
+            expert_view=config.get("expert_view", 5), obstacles=config.get("obstacles", 0),
         )
         env = wrappers.OneHotAction(env)
     elif suite == "metaworld":

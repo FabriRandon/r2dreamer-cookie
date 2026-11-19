@@ -65,13 +65,15 @@ def _shorter_hallways(hallway, fixed_corner=False):
 # Per-step signals the trainer adds up over each episode and logs as
 # episode/<name>, so a run shows progress long before the agent gets cookies:
 # button presses, distinct cells visited, and steps spent in the button's room.
+# With obstacles there is one more: the times it walked into one.
 LOGS = ("presses", "cells", "button_room")
+OBSTACLE_LOGS = ("bumps",)
 
 
 class Cookie(gym.Env):
     metadata = {}
 
-    def __init__(self, task, size=(64, 64), seed=0, press_on_move=True, expert_view=5):
+    def __init__(self, task, size=(64, 64), seed=0, press_on_move=True, expert_view=5, obstacles=0):
         from cookie_env.envs import ThreeRooms
         from cookie_env.objects import Button
         from cookie_env.utils import spawner
@@ -116,6 +118,12 @@ class Cookie(gym.Env):
         # the button presses it, so it no longer needs the other four MiniGrid
         # actions, which a random policy mostly wastes steps on.
         self._press_on_move = press_on_move
+        # Obstacles per room, drawn again at every reset (envs/obstacles.py). They need the map with hallways.
+        self._obstacles = int(obstacles)
+        assert not self._obstacles or suffix.startswith("hall"), "obstacles are placed on the map with hallways (hallN)"
+        self._obstacle_rng = None
+        self._placed = []  # (room, cell, shape, colour) of the obstacles of the current episode
+        self._log_names = LOGS + (OBSTACLE_LOGS if self._obstacles else ())
         self._button = Button
         self._size = tuple(size)
         self._seed = seed
@@ -138,7 +146,7 @@ class Cookie(gym.Env):
             "is_first": gym.spaces.Box(0, 1, (), dtype=bool),
             "is_last": gym.spaces.Box(0, 1, (), dtype=bool),
             "is_terminal": gym.spaces.Box(0, 1, (), dtype=bool),
-            **{f"log_{name}": gym.spaces.Box(-np.inf, np.inf, (1,), dtype=np.float32) for name in LOGS},
+            **{f"log_{name}": gym.spaces.Box(-np.inf, np.inf, (1,), dtype=np.float32) for name in self._log_names},
         })
 
     @property
@@ -179,6 +187,11 @@ class Cookie(gym.Env):
         facing_button = isinstance(env.grid.get(*env.front_pos), self._button)
         if self._press_on_move and action == FORWARD and facing_button:
             action = TOGGLE
+        bumped = False
+        if self._obstacles and action == FORWARD:
+            from envs.obstacles import Obstacle
+
+            bumped = isinstance(env.grid.get(*env.front_pos), Obstacle)  # solid: it stays where it is
         obs, reward, terminated, truncated, info = self._env.step(action)
         done = terminated or truncated
         cell = tuple(int(v) for v in env.agent_pos)
@@ -189,7 +202,7 @@ class Cookie(gym.Env):
             "is_first": False,
             "is_last": done,
             "is_terminal": terminated,
-            **self._logs(presses=action == TOGGLE and facing_button, cells=new_cell, button_room=self._in_room(cell)),
+            **self._logs(presses=action == TOGGLE and facing_button, cells=new_cell, button_room=self._in_room(cell), bumps=bumped),
         }
         return obs, np.float32(reward), done, info
 
@@ -200,12 +213,24 @@ class Cookie(gym.Env):
             # cookie-env picks the cookie's corner with Python's global random,
             # which the env worker processes would otherwise seed from the OS.
             random.seed(self._seed)
+            # Whoever reseeds the env (watch.py, the explorer: _seeded = False) gets the same obstacles too.
+            self._obstacle_rng = None
         obs, _ = self._env.reset(seed=None if self._seeded else self._seed)
         self._seeded = True
         self._expert_action = None
         if self._expert is not None:
             self._expert.reset()
         env = self._env.unwrapped
+        if self._obstacles:
+            from envs import obstacles
+
+            if self._obstacle_rng is None:
+                # Its own generator (not the global random of the cookie's corner, nor MiniGrid's),
+                # seeded with the env's seed: a run is reproducible, and every episode is different.
+                self._obstacle_rng = np.random.default_rng([int(self._seed), 0x0B57AC1E])
+            self._placed = obstacles.place(env, self._obstacle_rng, self._hallway, self._obstacles)
+            # The picture MiniGrid made when it reset does not have them yet.
+            obs = self._env.observation(env.gen_obs())
         cell = tuple(int(v) for v in env.agent_pos)
         self._visited = {cell}
         self._button_pos = next(
@@ -254,9 +279,8 @@ class Cookie(gym.Env):
             return False
         return max(abs(cell[0] - self._button_pos[0]), abs(cell[1] - self._button_pos[1])) <= radius
 
-    @staticmethod
-    def _logs(**values):
-        return {f"log_{name}": np.float32(values[name]) for name in LOGS}
+    def _logs(self, **values):
+        return {f"log_{name}": np.float32(values.get(name, 0)) for name in self._log_names}
 
     def _image(self, obs):
         image = obs["image"]

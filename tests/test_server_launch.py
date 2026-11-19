@@ -64,7 +64,7 @@ def same(a, b):
 
 class LaunchTests(unittest.TestCase):
     def test_every_experiment_has_a_notebook_except_the_expert_run(self):
-        self.assertEqual(set(launch.EXPERIMENTS) - {"exp3-expert", "exp3-mix", "exp4-mix", "local-expert"}, set(NOTEBOOKS))
+        self.assertEqual(set(launch.EXPERIMENTS) - {"exp3-expert", "exp3-mix", "exp4-mix", "exp5-mix", "exp3-obstaculos", "local-expert"}, set(NOTEBOOKS))
 
     def test_the_expert_run_is_the_random_run_with_the_expert_collecting(self):
         mine, expected, logdir, folder = launch.build("exp3-expert", args_for())
@@ -81,7 +81,7 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(expected["trainer.data_mix.actor"], 0)
         # The other experiments do not touch data_mix.
         for name in launch.EXPERIMENTS:
-            if name not in ("exp3-expert", "exp3-mix", "exp4-mix", "local-expert"):
+            if name not in ("exp3-expert", "exp3-mix", "exp4-mix", "exp5-mix", "local-expert"):
                 self.assertNotIn("trainer.data_mix.expert", as_dict(launch.build(name, args_for())[0]))
 
     def test_matches_the_notebooks(self):
@@ -137,13 +137,41 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(mine["env.expert_view"], "3")
         self.assertEqual(expected["env.expert_view"], 3)
         for name in launch.EXPERIMENTS:
-            if name != "exp4-mix":
+            if name not in ("exp4-mix", "exp5-mix"):
                 self.assertNotIn("env.expert_view", as_dict(launch.build(name, args_for())[0]))
         self.assertEqual((mine["trainer.video_render"], mine["trainer.train_video_every"]), ("True", "10"))
         self.assertEqual([mine[f"trainer.data_mix.{k}"] for k in ("actor", "random", "expert")], ["1", "1", "1"])
         for name in launch.EXPERIMENTS:
-            if name != "exp4-mix":
+            if name not in ("exp4-mix", "exp5-mix", "exp3-obstaculos"):  # the runs with videos of the whole grid
                 self.assertNotIn("trainer.video_render", as_dict(launch.build(name, args_for())[0]))
+
+    def test_exp5_mix_is_exp4_mix_with_obstacles(self):
+        mine, expected, logdir, folder = launch.build("exp5-mix", args_for())
+        mine = as_dict(mine)
+        mix4 = as_dict(launch.build("exp4-mix", args_for())[0])
+        self.assertEqual(folder, "cookie_partial_hall5_view3_s0_mix_obstaculos")  # not exp4-mix's folder
+        self.assertEqual(expected["env.obstacles"], 1)
+        differs = {k for k in set(mine) | set(mix4) if k != "logdir" and mine.get(k) != mix4.get(k)}
+        self.assertEqual(differs, {"env.obstacles"})  # the only difference
+        self.assertEqual(mine["env.obstacles"], "1")
+        for name in launch.EXPERIMENTS:
+            if name not in ("exp5-mix", "exp3-obstaculos"):  # the runs with obstacles
+                self.assertNotIn("env.obstacles", as_dict(launch.build(name, args_for())[0]))
+
+    def test_exp3_obstaculos_is_only_dreamer_with_obstacles_and_a_5x5_view(self):
+        mine, expected, logdir, folder = launch.build("exp3-obstaculos", args_for())
+        mine = as_dict(mine)
+        normal = as_dict(launch.build("exp3-normal", args_for())[0])
+        self.assertEqual(folder, "cookie_partial_hall5_view5_s0_base_obstaculos")  # not exp3-normal's folder
+        self.assertEqual((mine["env.task"], mine["env.obstacles"], mine["env.steps"]), ("cookie_partial_hall5_view5", "1", "1000000"))
+        # Only Dreamer collects the data: no random agent, no expert, no data_mix at all.
+        self.assertEqual(mine["trainer.random_policy"], "False")
+        self.assertFalse([k for k in mine if k.startswith("trainer.data_mix") or k == "env.expert_view"])
+        # Next to exp3-normal (same view, the actor collects): obstacles, the videos and the longer run.
+        differs = {k for k in set(mine) | set(normal) if k != "logdir" and mine.get(k) != normal.get(k)}
+        self.assertEqual(differs, {"env.obstacles", "env.steps", "trainer.video_render", "trainer.train_video_every"})
+        self.assertEqual(expected["env.obstacles"], 1)
+        self.assertNotIn("trainer.data_mix.expert", expected)
 
     def test_local_run_fits_a_desktop_and_a_night(self):
         mine, expected, logdir, folder = launch.build("local-expert", args_for())

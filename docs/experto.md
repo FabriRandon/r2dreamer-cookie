@@ -17,7 +17,7 @@ Decide solo con una vista de 3×3 casillas (dos adelante y una a cada lado), la 
 5. si no está en ninguna de las dos, está en la otra sala: repite lo mismo allá;
 6. con la galleta, vuelve por el centro y presiona el botón de nuevo, hasta que termina el episodio.
 
-Un ciclo (de un botón al siguiente) dura **35 pasos** si la galleta está en la primera esquina que mira, **37** si está en la segunda esquina de esa sala, **51** si está en la primera esquina de la otra sala y **53** si está en la segunda: las cuatro esquinas son igual de probables, así que cada duración sale ~25 % de las veces (medido en 40 episodios completos, unos 710 ciclos: 163, 182, 197 y 173). En `hall5` un episodio dura 816 pasos (4·12·17, el límite de MiniGrid; el `time_limit: 2088` de `configs/env/cookie.yaml` no llega a usarse): **≈ 18,3 galletas por episodio** (promedio de 40 episodios; entre 16 y 20). Es el techo razonable del `episode/eval_score` con vista 3×3.
+Un ciclo (de un botón al siguiente) dura **35 pasos** si la galleta está en la primera esquina que mira, **37** si está en la segunda esquina de esa sala, **51** si está en la primera esquina de la otra sala y **53** si está en la segunda: las cuatro esquinas son igual de probables, así que cada duración sale ~25 % de las veces (medido en 60 episodios completos, unos 1.070 ciclos: 251, 268, 285 y 268). En `hall5` un episodio dura 816 pasos (4·12·17, el límite de MiniGrid; el `time_limit: 2088` de `configs/env/cookie.yaml` no llega a usarse): **≈ 18,2 galletas por episodio** (promedio de 60 episodios; entre 16 y 20). Es el techo razonable del `episode/eval_score` con vista 3×3.
 
 Cada ciclo es el más corto posible dado el orden en que decide mirar (los tests lo comprueban contra una búsqueda de caminos independiente para las 32 combinaciones de esquina y decisiones al azar).
 
@@ -30,7 +30,11 @@ Decide con una vista de 5×5 propia. Cada ciclo:
 3. si ve la galleta va por ella; si no, hace lo mismo en la otra sala;
 4. vuelve por el centro y presiona el botón de nuevo, hasta que termina el episodio.
 
-Un ciclo dura 35 pasos si acierta la sala a la primera y 43 si no (promedio ≈ 39), o sea ≈ 20,7 galletas por episodio (medido en 60 episodios: entre 20 y 22). Con la misma semilla hace exactamente las mismas acciones aunque el agente vea `view3`, `view5` o `view7`.
+Un ciclo dura 35 pasos si acierta la sala a la primera y 43 si no (promedio ≈ 39), o sea ≈ 20,8 galletas por episodio (medido en 60 episodios: entre 20 y 22). Con la misma semilla hace exactamente las mismas acciones aunque el agente vea `view3`, `view5` o `view7`.
+
+### Con obstáculos
+
+Si el ambiente tiene obstáculos sólidos (`env.obstacles=1`, ver [`obstaculos.md`](obstaculos.md)), los dos expertos los recuerdan al verlos y los rodean (también al presionar el botón: lo hacen desde un costado si hay uno delante). El de 3×3 mira cada esquina desde la mejor posición alcanzable desde la que se ve; con la sala vacía es exactamente el recorrido de arriba. A cambio dejan de ser óptimos: 17,4 galletas por episodio el de 3×3 (18,2 sin obstáculos) y 20,1 el de 5×5 (20,8).
 
 ### Verlos en video
 
