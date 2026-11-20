@@ -62,9 +62,13 @@ def same(a, b):
         return a == b
 
 
+# exp3-obstaculos and the three runs made to contrast it: only Dreamer, 1M steps, videos of the whole grid.
+PAIRS = ("exp3-obstaculos", "exp3-sin-obstaculos", "exp4-obstaculos", "exp4-sin-obstaculos")
+
+
 class LaunchTests(unittest.TestCase):
     def test_every_experiment_has_a_notebook_except_the_expert_run(self):
-        self.assertEqual(set(launch.EXPERIMENTS) - {"exp3-expert", "exp3-mix", "exp4-mix", "exp5-mix", "exp3-obstaculos", "local-expert"}, set(NOTEBOOKS))
+        self.assertEqual(set(launch.EXPERIMENTS) - {"exp3-expert", "exp3-mix", "exp4-mix", "exp5-mix", *PAIRS, "local-expert"}, set(NOTEBOOKS))
 
     def test_the_expert_run_is_the_random_run_with_the_expert_collecting(self):
         mine, expected, logdir, folder = launch.build("exp3-expert", args_for())
@@ -142,7 +146,7 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual((mine["trainer.video_render"], mine["trainer.train_video_every"]), ("True", "10"))
         self.assertEqual([mine[f"trainer.data_mix.{k}"] for k in ("actor", "random", "expert")], ["1", "1", "1"])
         for name in launch.EXPERIMENTS:
-            if name not in ("exp4-mix", "exp5-mix", "exp3-obstaculos"):  # the runs with videos of the whole grid
+            if name not in ("exp4-mix", "exp5-mix", *PAIRS):  # the runs with videos of the whole grid
                 self.assertNotIn("trainer.video_render", as_dict(launch.build(name, args_for())[0]))
 
     def test_exp5_mix_is_exp4_mix_with_obstacles(self):
@@ -155,7 +159,7 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(differs, {"env.obstacles"})  # the only difference
         self.assertEqual(mine["env.obstacles"], "1")
         for name in launch.EXPERIMENTS:
-            if name not in ("exp5-mix", "exp3-obstaculos"):  # the runs with obstacles
+            if name not in ("exp5-mix", "exp3-obstaculos", "exp4-obstaculos"):  # the runs with obstacles
                 self.assertNotIn("env.obstacles", as_dict(launch.build(name, args_for())[0]))
 
     def test_exp3_obstaculos_is_only_dreamer_with_obstacles_and_a_5x5_view(self):
@@ -172,6 +176,40 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(differs, {"env.obstacles", "env.steps", "trainer.video_render", "trainer.train_video_every"})
         self.assertEqual(expected["env.obstacles"], 1)
         self.assertNotIn("trainer.data_mix.expert", expected)
+
+    def test_the_contrast_runs_change_only_the_obstacles_or_the_view(self):
+        def build(name):
+            overrides, expected, logdir, folder = launch.build(name, args_for())
+            return as_dict(overrides), expected, folder
+
+        base, _, base_folder = build("exp3-obstaculos")
+        sin5, expected5, folder5 = build("exp3-sin-obstaculos")
+        con3, expected3, folder3 = build("exp4-obstaculos")
+        sin3, expected_sin3, folder_sin3 = build("exp4-sin-obstaculos")
+
+        def differs(a, b):
+            return {k for k in set(a) | set(b) if k != "logdir" and a.get(k) != b.get(k)}
+
+        # The same run without obstacles, or with a 3x3 view: nothing else changes.
+        self.assertEqual(differs(base, sin5), {"env.obstacles"})
+        self.assertEqual(differs(base, con3), {"env.task"})
+        self.assertEqual(differs(sin5, sin3), {"env.task"})
+        self.assertEqual(differs(con3, sin3), {"env.obstacles"})
+        self.assertEqual((base["env.task"], con3["env.task"]), ("cookie_partial_hall5_view5", "cookie_partial_hall5_view3"))
+        self.assertEqual((con3["env.obstacles"], sin3.get("env.obstacles")), ("1", None))  # none = the default, 0
+        # Four different folders, none of them one that an earlier experiment writes to.
+        folders = [base_folder, folder5, folder3, folder_sin3]
+        self.assertEqual(len(set(folders)), 4)
+        self.assertEqual(folders, ["cookie_partial_hall5_view5_s0_base_obstaculos", "cookie_partial_hall5_view5_s0_base_sin_obstaculos",
+                                   "cookie_partial_hall5_view3_s0_base_obstaculos", "cookie_partial_hall5_view3_s0_base_sin_obstaculos"])
+        earlier = {launch.build(n, args_for())[3] for n in launch.EXPERIMENTS if n not in PAIRS}
+        self.assertFalse(earlier & set(folders))
+        for run in (sin5, con3, sin3):
+            self.assertEqual((run["env.steps"], run["trainer.random_policy"], run["trainer.video_render"]), ("1000000", "False", "True"))
+            self.assertFalse([k for k in run if k.startswith("trainer.data_mix") or k == "env.expert_view"])
+        self.assertNotIn("env.obstacles", expected5)
+        self.assertEqual(expected3["env.obstacles"], 1)
+        self.assertEqual(expected_sin3["env.task"], "cookie_partial_hall5_view3")
 
     def test_local_run_fits_a_desktop_and_a_night(self):
         mine, expected, logdir, folder = launch.build("local-expert", args_for())

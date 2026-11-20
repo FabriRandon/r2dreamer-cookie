@@ -211,6 +211,67 @@ def test_they_are_solid_and_the_bumps_are_counted():
     assert float(obs["log_bumps"]) == 0
 
 
+# ---- the fixed obstacles of the first experiments: runs trained with them must load as they were ----
+def observation_stream(mode, view, steps=300):
+    """300 random steps with resets (the stream the hashes below were taken from, on `main`)."""
+    import hashlib
+
+    env = Cookie(f"partial_hall5_view{view}", (64, 64), seed=0, obstacles=mode)
+    rng = np.random.default_rng(1)
+    images = [env.reset()["image"]]
+    for _ in range(steps):
+        obs, _, done, _ = env.step(int(rng.integers(3)))
+        images.append(obs["image"])
+        if done:
+            images.append(env.reset()["image"])
+    return hashlib.sha256(np.ascontiguousarray(np.stack(images)).tobytes()).hexdigest()[:24]
+
+
+@pytest.mark.parametrize("mode,view,digest", [
+    ("distinct", 5, "1271918744a5484e5fd2db19"), ("distinct", 3, "f74664801f81fa77a406e80e"),
+    ("same", 5, "7b80bcef7263dbc6be3fd16c"), ("same", 3, "ae015bf0493ad967f5f1813e"),
+])
+def test_the_fixed_obstacles_give_the_same_observations_as_when_those_runs_were_trained(mode, view, digest):
+    # The digests are those of the code that trained the runs (FabriRandon's `main`, Nov 19 2026).
+    assert observation_stream(mode, view) == digest
+
+
+def test_the_fixed_obstacles_are_two_green_blocks_that_are_walls_for_the_symbolic_view():
+    from envs.obstacles import FixedObstacle
+
+    for mode in ("same", "distinct"):
+        world = World(seed=0, view=5, expert_view=5, obstacles=mode)
+        blocks = [(world.rel((x, y)), world.inner.grid.get(x, y)) for x in range(world.inner.width)
+                  for y in range(world.inner.height) if isinstance(world.inner.grid.get(x, y), FixedObstacle)]
+        assert sorted(c for c, _ in blocks) == [(-5, -1), (5, 1)]  # the west room, one row above the middle; the east, one below
+        assert {c: b.triangle for c, b in blocks} == {(-5, -1): False, (5, 1): mode == "distinct"}
+        assert all(b.encode()[0] == 2 and b.can_overlap() is False for _, b in blocks)  # id 2 is a wall
+        assert world.env._placed == []  # nothing random on top of them
+    # They do not move between episodes, and they are solid and counted like the random ones.
+    world = World(seed=1, view=5, expert_view=5, obstacles="distinct")
+    first = world.env.reset()["image"]
+    assert np.array_equal(first, world.env.reset()["image"])  # same layout, same first picture
+    world.inner.agent_pos, world.inner.agent_dir = (world.inner.agent_pos[0] + 4, world.inner.agent_pos[1] + 1), 0
+    before = tuple(world.inner.agent_pos)
+    obs, *_ = world.env.step(2)  # the east block is at +5, +1: forward bumps into it
+    assert tuple(world.inner.agent_pos) == before and float(obs["log_bumps"]) == 1
+
+
+def test_env_obstacles_accepts_numbers_and_the_old_words():
+    from envs.obstacles import parse
+
+    assert [parse(v) for v in (0, "0", "none", None, False)] == [(0, None)] * 5
+    assert [parse(v) for v in (1, "1", 3)] == [(1, None), (1, None), (3, None)]
+    assert parse("same") == (0, "same") and parse("distinct") == (0, "distinct")
+    for bad in ("many", -1):
+        with pytest.raises(ValueError):
+            parse(bad)
+    with pytest.raises(AssertionError, match="hallN"):
+        Cookie("partial", (64, 64), obstacles="distinct")  # not the map with hallways
+    with pytest.raises(AssertionError, match="fixed"):
+        World(seed=0, view=5, expert_view=5, obstacles="distinct").env.expert_action()  # the experts do not know them
+
+
 def test_the_agent_sees_them_in_its_image():
     # What it gets with the obstacle in front of it differs, in a patch of the obstacle's colour,
     # from what it gets with the same view and the obstacle taken away.

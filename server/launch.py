@@ -11,6 +11,9 @@ Standard library only, so it runs with the server's system python3 (no venv):
     python3 server/launch.py run exp4-mix                  # the same with a 3x3 view, videos of the whole grid
     python3 server/launch.py run exp5-mix                  # exp4-mix with a solid obstacle in each room, new every episode
     python3 server/launch.py run exp3-obstaculos           # 5x5 view, obstacles, only Dreamer collects the data
+    python3 server/launch.py run exp3-sin-obstaculos       # the same without obstacles
+    python3 server/launch.py run exp4-obstaculos           # 3x3 view, obstacles, only Dreamer
+    python3 server/launch.py run exp4-sin-obstaculos       # the same without obstacles
     python3 server/launch.py run all --smoke               # 1,500-step test of every experiment
 
 Every experiment mirrors a Colab notebook of "EXPERIMENTOS PRESENTACIÓN/"
@@ -89,6 +92,15 @@ EXPERIMENTS = {
     # a 5x5 view and the solid obstacles of exp5-mix. Videos of the whole grid, like the mix runs.
     "exp3-obstaculos": dict(view=5, random=False, steps=1_000_000, video=True, obstacles=1, suffix="obstaculos",
                             what="vista 5x5, SOLO Dreamer, con un obstáculo sólido por sala (nuevo en cada episodio)"),
+    # The pairs to see what the obstacles change: exp3-obstaculos without obstacles, and the same two runs with a
+    # 3x3 view. Everything else (steps, videos, only Dreamer collecting data, seed) is exp3-obstaculos'. The
+    # folders have a suffix, so they do not collide with the 500k-step exp3-normal / exp4-normal of the notebooks.
+    "exp3-sin-obstaculos": dict(view=5, random=False, steps=1_000_000, video=True, suffix="sin_obstaculos",
+                                what="vista 5x5, SOLO Dreamer, sin obstáculos (el par de exp3-obstaculos)"),
+    "exp4-obstaculos": dict(view=3, random=False, steps=1_000_000, video=True, obstacles=1, suffix="obstaculos",
+                            what="vista 3x3, SOLO Dreamer, con un obstáculo sólido por sala (nuevo en cada episodio)"),
+    "exp4-sin-obstaculos": dict(view=3, random=False, steps=1_000_000, video=True, suffix="sin_obstaculos",
+                                what="vista 3x3, SOLO Dreamer, sin obstáculos (el par de exp4-obstaculos)"),
     # A one-night test on a desktop GPU (8 GB, 16 GB of RAM): the same run with a smaller
     # replay buffer and a wall-clock limit as a safety net. See "Prueba local" in docs/servidor.md.
     "local-expert": dict(view=5, random=False, expert=True, steps=450_000, buffer=200_000, max_hours=7.75, suffix="local",

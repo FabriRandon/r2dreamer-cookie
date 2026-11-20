@@ -6,11 +6,22 @@ En el mapa de pasillos (`hallN`) se puede poner **un obstáculo sólido en cada 
 python train.py env=cookie env.task=cookie_partial_hall5_view3 env.obstacles=1
 ```
 
-`env.obstacles` es la cantidad de obstáculos **por sala** (`0` = ninguno, que es lo normal y no cambia nada de los experimentos anteriores). Hay dos experimentos del lanzador con obstáculos: `exp5-mix` es `exp4-mix` (visión 3×3, datos en tercios actor, azar y experto) con `env.obstacles=1`, y `exp3-obstaculos` es visión 5×5 con **solo Dreamer** juntando los datos:
+`env.obstacles` es la cantidad de obstáculos **por sala** (`0` = ninguno, que es lo normal y no cambia nada de los experimentos anteriores). Hay experimentos del lanzador con obstáculos: `exp5-mix` es `exp4-mix` (visión 3×3, datos en tercios actor, azar y experto) con `env.obstacles=1`, y `exp3-obstaculos` es visión 5×5 con **solo Dreamer** juntando los datos:
 
 ```bash
 python3 server/launch.py run exp5-mix
 python3 server/launch.py run exp3-obstaculos
+```
+
+Para ver **qué diferencia hacen** los obstáculos hay tres experimentos más, todos solo Dreamer, con videos y 1.000.000 de pasos. Cada uno cambia una sola cosa respecto a `exp3-obstaculos` (5×5, con obstáculos):
+
+| | con obstáculos | sin obstáculos |
+|---|---|---|
+| visión 5×5 | `exp3-obstaculos` | `exp3-sin-obstaculos` |
+| visión 3×3 | `exp4-obstaculos` | `exp4-sin-obstaculos` |
+
+```bash
+python3 server/launch.py run exp3-sin-obstaculos exp4-obstaculos exp4-sin-obstaculos
 ```
 
 ## Qué son
@@ -36,6 +47,10 @@ Además, un sorteo se descarta (y se repite) si deja alguna esquina de galleta o
 - Los videos de entrenamiento y evaluación (`trainer.video_render=True`) los muestran en el mapa completo.
 - Aparece una métrica nueva, **`episode/bumps`** (y `episode/eval_bumps`): cuántas veces el agente avanzó contra un obstáculo en la partida. Si Dreamer aprendió que bloquean, baja con el entrenamiento. `progress.py` la muestra como «choques con obstáculos».
 - `compare_runs.py` agrega «con obstáculos» a la etiqueta de estos runs.
+
+## Compatibilidad con los obstáculos fijos de los primeros experimentos
+
+Los primeros experimentos de obstáculos (`semana19`, hechos en Colab en la rama `main`) usaban `env.obstacles=same` o `distinct`: dos obstáculos verdes **fijos**, un cuadrado en la sala oeste y, en la este, otro cuadrado (`same`) o un triángulo (`distinct`). `env.obstacles` los acepta (y `none` = `0`), con las mismas casillas y el mismo dibujo, para poder **cargar y explorar esos runs**: las observaciones que da el ambiente son idénticas píxel a píxel a las del código que los entrenó (un test lo comprueba con huellas tomadas de ese código). Para el modelo son paredes (id 2 en la vista simbólica). Los expertos no los conocen: son para ver runs viejos, no para entrenar con experto (el ambiente lo avisa).
 
 ## Reproducibilidad
 

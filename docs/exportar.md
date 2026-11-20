@@ -105,7 +105,7 @@ Abre una página (por defecto <http://localhost:7860>) donde mueves al agente co
 .venv/bin/python watch.py --logdir /ruta/al/run_extraido --out agente.mp4
 ```
 
-**En Colab:** sube la carpeta extraída a Drive y abre el notebook de exploración; cambia `NOMBRE_RUN` por el nombre de la carpeta.
+**En Colab:** abre `notebooks/explorar_modelo_colab.ipynb`: instala el código, **baja el run de Drive con su link** (solo `latest.pt` y la configuración, sin los eventos ni el buffer) y abre el explorador en la misma página. Ver [`colab_explorador.md`](colab_explorador.md). (El cuaderno anterior, `explorar_modelo_mundo_expert5x5.ipynb`, lee el run desde `Mi unidad`.)
 
 > `explorar_modelo.py` es una copia de la celda 12 del notebook. Si cambias uno, cambia el otro. De él probé aquí el modo `--prueba`; la página de Gradio es el código de tu notebook sin modificar.
 

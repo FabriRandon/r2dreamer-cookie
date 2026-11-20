@@ -118,12 +118,17 @@ class Cookie(gym.Env):
         # the button presses it, so it no longer needs the other four MiniGrid
         # actions, which a random policy mostly wastes steps on.
         self._press_on_move = press_on_move
-        # Obstacles per room, drawn again at every reset (envs/obstacles.py). They need the map with hallways.
-        self._obstacles = int(obstacles)
-        assert not self._obstacles or suffix.startswith("hall"), "obstacles are placed on the map with hallways (hallN)"
+        # Obstacles (envs/obstacles.py): a number per room, drawn again at every reset, or one of the fixed
+        # layouts of the first experiments ("same", "distinct"). They need the map with hallways.
+        from envs.obstacles import parse
+
+        self._obstacles, self._fixed_obstacles = parse(obstacles)
+        assert not (self._obstacles or self._fixed_obstacles) or suffix.startswith("hall"), (
+            "obstacles are placed on the map with hallways (hallN)"
+        )
         self._obstacle_rng = None
         self._placed = []  # (room, cell, shape, colour) of the obstacles of the current episode
-        self._log_names = LOGS + (OBSTACLE_LOGS if self._obstacles else ())
+        self._log_names = LOGS + (OBSTACLE_LOGS if self._obstacles or self._fixed_obstacles else ())
         self._button = Button
         self._size = tuple(size)
         self._seed = seed
@@ -168,6 +173,7 @@ class Cookie(gym.Env):
             from envs.expert import make_expert
 
             assert self._press_on_move, "the expert presses the button by moving into it (press_on_move)"
+            assert not self._fixed_obstacles, "the experts know the random obstacles (env.obstacles=N), not the fixed ones"
             assert self._hallway == 5, f"the expert knows the map with hallways of 5 cells, not {self._hallway}"
             self._expert = make_expert(self._expert_view, hallway=self._hallway, seed=self._seed)
             self._expert.reset()
@@ -188,10 +194,10 @@ class Cookie(gym.Env):
         if self._press_on_move and action == FORWARD and facing_button:
             action = TOGGLE
         bumped = False
-        if self._obstacles and action == FORWARD:
-            from envs.obstacles import Obstacle
+        if (self._obstacles or self._fixed_obstacles) and action == FORWARD:
+            from envs.obstacles import SOLID
 
-            bumped = isinstance(env.grid.get(*env.front_pos), Obstacle)  # solid: it stays where it is
+            bumped = isinstance(env.grid.get(*env.front_pos), SOLID)  # solid: it stays where it is
         obs, reward, terminated, truncated, info = self._env.step(action)
         done = terminated or truncated
         cell = tuple(int(v) for v in env.agent_pos)
@@ -221,6 +227,11 @@ class Cookie(gym.Env):
         if self._expert is not None:
             self._expert.reset()
         env = self._env.unwrapped
+        if self._fixed_obstacles:
+            from envs import obstacles
+
+            obstacles.place_fixed(env, self._fixed_obstacles, self._hallway)
+            obs = self._env.observation(env.gen_obs())  # the picture MiniGrid made at reset lacks them
         if self._obstacles:
             from envs import obstacles
 

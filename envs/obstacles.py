@@ -20,8 +20,9 @@ not be reachable from the start.
 import math
 from collections import deque
 
-from minigrid.core.world_object import WorldObj
-from minigrid.utils.rendering import fill_coords, point_in_rect, rotate_fn
+from minigrid.core.constants import COLORS
+from minigrid.core.world_object import Wall, WorldObj
+from minigrid.utils.rendering import fill_coords, point_in_rect, point_in_triangle, rotate_fn
 
 # Object id in the symbolic view; cookie-env uses 11 (button) and 12 (cookie). envs/expert.py
 # repeats it (it must not import this module), and a test checks both agree.
@@ -92,6 +93,55 @@ class Obstacle(WorldObj):
 
     def __repr__(self):
         return f"Obstacle({self.shape}, {self.colour})"
+
+
+class FixedObstacle(Wall):
+    """The fixed obstacles of the first experiments (`env.obstacles=same|distinct`): a green block that
+    is a wall as far as the symbolic view goes, drawn as a square or as a triangle. Kept so that runs
+    trained with them can be loaded and explored with the exact same pictures."""
+
+    def __init__(self, triangle):
+        super().__init__("green")
+        self.triangle = triangle
+
+    def encode(self):
+        # Grid.render_tile caches by encoding, so each shape needs its own key.
+        kind, color, _ = super().encode()
+        return kind, color, int(self.triangle)
+
+    def render(self, img):
+        shape = (point_in_triangle((0.5, 0.08), (0.9, 0.88), (0.1, 0.88)) if self.triangle
+                 else point_in_rect(0.22, 0.78, 0.22, 0.78))
+        fill_coords(img, shape, COLORS[self.color])
+
+
+FIXED_MODES = ("same", "distinct")
+SOLID = (Obstacle, FixedObstacle)
+
+
+def parse(value):
+    """What `env.obstacles` asks for: (random obstacles per room, fixed mode). It is a number of random
+    obstacles per room (0 or "none": no obstacles), or one of the fixed layouts "same" (two squares) and
+    "distinct" (a square and a triangle) of the first experiments."""
+    if value in (None, False, "none", ""):
+        return 0, None
+    if value in FIXED_MODES:
+        return 0, value
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"unknown value for env.obstacles: {value!r} (a number per room, or none, same, distinct)") from None
+    if count < 0:
+        raise ValueError(f"env.obstacles cannot be negative, got {count}")
+    return count, None
+
+
+def place_fixed(env, mode, hallway):
+    """The fixed layout: a square in the west room (one row above its middle) and, in the east room (one
+    row below its middle), another square (`same`) or a triangle (`distinct`)."""
+    cx, cy = (int(v) for v in env.agent_pos)
+    env.put_obj(FixedObstacle(triangle=False), cx - hallway, cy - 1)
+    env.put_obj(FixedObstacle(triangle=mode == "distinct"), cx + hallway, cy + 1)
 
 
 def layout(start, hallway):

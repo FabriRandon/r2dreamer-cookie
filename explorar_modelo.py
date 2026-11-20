@@ -13,6 +13,15 @@ modelo asigna a cada estado, y una tira con lo que imagina el actor.
 
     python3 explorar_modelo.py --logdir /ruta/al/run            # abre la página
     python3 explorar_modelo.py --logdir /ruta/al/run --prueba out.png  # sin interfaz
+
+`--logdir` puede ser la carpeta de un run (con latest.pt y .hydra/) o una carpeta que contiene runs, como
+`obstaculos5x5/` con `distinct_s0/` adentro (con varios, `--run NOMBRE` elige uno). Con `--drive LINK` baja
+primero el run de Google Drive (solo latest.pt y la configuración, no los eventos ni el buffer):
+
+    python3 explorar_modelo.py --drive https://drive.google.com/drive/folders/<id> --destino /content/run
+
+En Colab, mira el cuaderno notebooks/explorar_modelo_colab.ipynb: instala, baja el run y abre la página.
+El código tiene que ser de una versión que sepa construir el ambiente del run (por ejemplo, con obstáculos).
 """
 
 import argparse
@@ -48,14 +57,49 @@ ACCIONES = ["izquierda", "derecha", "avanzar"]
 LADO = 256  # tamaño en pantalla de las imágenes de 64x64
 
 
+def resolver_run(ruta, nombre=None):
+    """La carpeta de un run (la que tiene latest.pt): `ruta` misma, o la única que hay dentro (hasta dos
+    niveles), o la que se llama `nombre`."""
+    ruta = pathlib.Path(ruta)
+    if not ruta.is_dir():
+        raise SystemExit(f"No existe la carpeta {ruta}")
+    if (ruta / "latest.pt").exists() and nombre in (None, ruta.name):
+        return ruta
+    runs = sorted({p.parent for patron in ("*/latest.pt", "*/*/latest.pt") for p in ruta.glob(patron)})
+    if nombre:
+        runs = [r for r in runs if r.name == nombre]
+    if len(runs) == 1:
+        return runs[0]
+    if not runs:
+        contenido = ", ".join(sorted(p.name for p in ruta.iterdir())[:12]) or "vacía"
+        raise SystemExit(f"En {ruta} no encuentro ningún run (una carpeta con latest.pt). Hay: {contenido}")
+    raise SystemExit("Hay varios runs; elige uno con --run: " + ", ".join(r.name for r in runs))
+
+
 def cargar(logdir, device):
+    faltan = [n for n in ("latest.pt", ".hydra/config.yaml") if not (logdir / n).exists()]
+    if faltan:
+        raise SystemExit(f"En {logdir} falta {', '.join(faltan)}: el run tiene que tener el agente y su configuración.")
     config = OmegaConf.load(logdir / ".hydra" / "config.yaml")
     config.device = device
     config.model.compile = False
-    env = make_env(config.env, 0)
+    try:
+        env = make_env(config.env, 0)
+    except (ValueError, TypeError, AssertionError, NotImplementedError) as error:
+        raise SystemExit(
+            f"No pude construir el ambiente de este run (env.task={config.env.get('task')}, "
+            f"env.obstacles={config.env.get('obstacles')}): {error}\n"
+            "Es probable que este código sea de una versión anterior o distinta a la que lo entrenó."
+        ) from error
     agent = Dreamer(config.model, env.observation_space, env.action_space).to(device)
     checkpoint = torch.load(logdir / "latest.pt", map_location=device, weights_only=False)
-    agent.load_state_dict(checkpoint["agent_state_dict"])
+    try:
+        agent.load_state_dict(checkpoint["agent_state_dict"])
+    except RuntimeError as error:
+        raise SystemExit(
+            "El checkpoint no calza con el modelo que arma este código (mira VERSION.txt del run, si lo tiene, "
+            f"y usa el mismo código con el que se entrenó):\n{str(error)[:600]}"
+        ) from error
     agent.eval()
     return config, env, agent, int(checkpoint.get("step", 0))
 
@@ -69,7 +113,8 @@ class Explorador:
 
     def __init__(self, logdir, device):
         self.device = torch.device(device)
-        self.config, self.env, self.agent, self.pasos_entrenados = cargar(pathlib.Path(logdir), device)
+        self.logdir = pathlib.Path(logdir)
+        self.config, self.env, self.agent, self.pasos_entrenados = cargar(self.logdir, device)
         self.rssm = self.agent.rssm
         self.cookie = self.env.unwrapped
         self.cookie._env.unwrapped.tile_size = 24
@@ -77,6 +122,18 @@ class Explorador:
         self.nombres = ACCIONES if self.n_acciones == len(ACCIONES) else [str(i) for i in range(self.n_acciones)]
         self.muestrear = False
         self.reiniciar(0)
+
+    def descripcion(self):
+        """De qué run se trata, en una línea: tarea, vista, obstáculos, quién juntó los datos y pasos."""
+        env, trainer = self.config.env, self.config.get("trainer") or {}
+        vista = str(env.get("task", "")).rpartition("_view")[2]
+        obstaculos = env.get("obstacles", "none")
+        obstaculos = "ninguno" if obstaculos in (0, "0", "none", None) else (
+            f"{obstaculos} por sala, nuevos en cada episodio" if str(obstaculos).isdigit() else str(obstaculos))
+        mezcla = {k: v for k, v in dict(trainer.get("data_mix") or {}).items() if v}
+        datos = "azar" if trainer.get("random_policy") else ("mezcla " + "/".join(f"{k} {v}" for k, v in mezcla.items()) if mezcla else "el actor")
+        return (f"`{self.logdir.name}` · {env.get('task')} (vista {vista}×{vista}) · obstáculos: {obstaculos} · "
+                f"datos juntados por {datos} · {self.pasos_entrenados:,} pasos")
 
     # --- piezas del modelo -------------------------------------------------
 
@@ -335,7 +392,7 @@ document.addEventListener('keydown', (e) => {
     head_en_launch = "head" in inspect.signature(gr.Blocks.launch).parameters
     with gr.Blocks(title="Modelo de mundo", **({} if head_en_launch else {"head": teclado})) as demo:
         gr.Markdown(
-            "### Recorrer el modelo de mundo (versión 3: imágenes incrustadas)\n"
+            f"### Recorrer el modelo de mundo (versión 3: imágenes incrustadas)\n**Run:** {exp.descripcion()}\n\n"
             "Flechas ← → ↑ (o los botones) mueven al agente. **S** sincroniza el sueño con la realidad, "
             "**A** juega la acción del actor. *Viendo* = el modelo recibe la imagen real en cada paso; "
             "*soñando* = solo recibe las acciones desde la última sincronización."
@@ -391,14 +448,23 @@ def prueba(exp, salida):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--logdir", required=True, type=pathlib.Path, help="carpeta del run con latest.pt y .hydra/")
+    parser.add_argument("--logdir", type=pathlib.Path, help="carpeta del run (con latest.pt y .hydra/) o que contiene runs")
+    parser.add_argument("--drive", help="link o id de la carpeta de Drive del run: lo baja a --destino (sin eventos ni buffer)")
+    parser.add_argument("--destino", type=pathlib.Path, default=pathlib.Path("run"), help="dónde dejar lo que baja de Drive")
+    parser.add_argument("--run", help="nombre del run, si la carpeta tiene varios")
     parser.add_argument("--port", type=int, default=7860)
     parser.add_argument("--share", action="store_true", help="crear además un link público de Gradio")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--prueba", type=pathlib.Path, default=None, help="no abre la página: guarda un PNG de prueba")
     args = parser.parse_args()
+    if args.drive:
+        import drive_run
 
-    exp = Explorador(args.logdir, args.device)
+        args.logdir = drive_run.descargar(args.drive, args.destino, args.run)
+    if args.logdir is None:
+        parser.error("indica --logdir (una carpeta con el run) o --drive (el link de su carpeta de Drive)")
+
+    exp = Explorador(resolver_run(args.logdir, args.run), args.device)
     if args.prueba:
         prueba(exp, args.prueba)
         return
