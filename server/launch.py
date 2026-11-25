@@ -14,6 +14,8 @@ Standard library only, so it runs with the server's system python3 (no venv):
     python3 server/launch.py run exp3-sin-obstaculos       # the same without obstacles
     python3 server/launch.py run exp4-obstaculos           # 3x3 view, obstacles, only Dreamer
     python3 server/launch.py run exp4-sin-obstaculos       # the same without obstacles
+    python3 server/launch.py run exp3-hall11-obstaculos    # 5x5 view, the original map (hallways of 11), obstacles, 2M steps
+    python3 server/launch.py run exp3-hall11-sin-obstaculos  # the same without obstacles
     python3 server/launch.py run all --smoke               # 1,500-step test of every experiment
 
 Every experiment mirrors a Colab notebook of "EXPERIMENTOS PRESENTACIÓN/"
@@ -101,6 +103,21 @@ EXPERIMENTS = {
                             what="vista 3x3, SOLO Dreamer, con un obstáculo sólido por sala (nuevo en cada episodio)"),
     "exp4-sin-obstaculos": dict(view=3, random=False, steps=1_000_000, video=True, suffix="sin_obstaculos",
                                 what="vista 3x3, SOLO Dreamer, sin obstáculos (el par de exp4-obstaculos)"),
+    # The original map of the game (hallways of 11 cells instead of 5: a 29x18 grid), only Dreamer collecting the
+    # data, a 5x5 view, with and without obstacles. A random agent finds the first cookie about as often per
+    # episode as on hallways of 5, but an episode is 2.5-3.7 times longer, so the same run sees far fewer
+    # episodes (docs/pasillos11.md). That is why these two do NOT use exp3-obstaculos' settings: 2M steps (the
+    # replay ratio stays at 128: twice the steps are already twice the updates), episodes of 3000 steps
+    # (MiniGrid's own 2088 are short of the time the trip to a cookie takes), ten times the entropy bonus
+    # (3e-3, so that the policy does not collapse before it finds the first cookies), an evaluation every 50k
+    # steps (an evaluation episode is now 3000 steps) and videos with 8-pixel tiles (the 16-pixel ones of a
+    # long episode take 12 GB of RAM to encode).
+    "exp3-hall11-obstaculos": dict(view=5, hall=11, random=False, steps=2_000_000, video=True, tile=8, obstacles=1,
+                                   time_limit=3000, eval_every=50_000, act_entropy=3e-3, suffix="obstaculos",
+                                   what="vista 5x5, mapa original (pasillos de 11), SOLO Dreamer, con obstáculos"),
+    "exp3-hall11-sin-obstaculos": dict(view=5, hall=11, random=False, steps=2_000_000, video=True, tile=8,
+                                       time_limit=3000, eval_every=50_000, act_entropy=3e-3, suffix="sin_obstaculos",
+                                       what="vista 5x5, mapa original (pasillos de 11), SOLO Dreamer, sin obstáculos"),
     # A one-night test on a desktop GPU (8 GB, 16 GB of RAM): the same run with a smaller
     # replay buffer and a wall-clock limit as a safety net. See "Prueba local" in docs/servidor.md.
     "local-expert": dict(view=5, random=False, expert=True, steps=450_000, buffer=200_000, max_hours=7.75, suffix="local",
@@ -116,7 +133,7 @@ SAME_AS_SAVED = (
     "env.task", "env.size", "model.rep_loss", "trainer.random_policy", "model.train_actor_critic",
     "buffer.reward_slices", "model.act_entropy", "seed",
     "trainer.data_mix.actor", "trainer.data_mix.random", "trainer.data_mix.expert", "env.expert_view",
-    "env.obstacles",
+    "env.obstacles", "env.train_ratio", "env.max_steps",
 )
 
 # Runs inside the repo's venv: composes the config the way train.py will and
@@ -152,6 +169,7 @@ elif saved.exists():
             a = 5  # a run from before the 3x3 expert existed: its expert saw 5x5
         if a is None and key == "env.obstacles":
             a = 0  # a run from before obstacles existed: none
+        # (env.max_steps: a run from before it existed has none, which is what the others leave unset)
         if a != b:
             errors.append(f"la carpeta {cfg.logdir} ya tiene un run con {key}={a!r}, no {b!r}; usa otra --logroot o bórrala")
 elif (Path(cfg.logdir) / "latest.pt").exists():
@@ -179,7 +197,8 @@ def mix_of(spec):
 def build(name, args):
     """The Hydra overrides, the expected effective values and the run's folder."""
     spec = EXPERIMENTS[name]
-    task = "cookie_full_hall5" if spec["view"] is None else f"cookie_partial_hall5_view{spec['view']}"
+    hall = spec.get("hall", 5)  # cells of each hallway of the map
+    task = f"cookie_full_hall{hall}" if spec["view"] is None else f"cookie_partial_hall{hall}_view{spec['view']}"
     mix = mix_of(spec)
     case = ("mix" if len(mix) > 1 else next(iter(mix))) if mix else "random" if spec["random"] else "base"
     folder = f"{task}_s{args.seed}_{case}" + (f"_{spec['suffix']}" if spec.get("suffix") else "")
@@ -190,6 +209,11 @@ def build(name, args):
 
     options = dict(COMMON)
     options["buffer.max_size"] = spec.get("buffer", COMMON["buffer.max_size"])
+    options["env.train_ratio"] = spec.get("train_ratio", COMMON["env.train_ratio"])  # replayed steps per env step
+    options["trainer.eval_every"] = spec.get("eval_every", COMMON["trainer.eval_every"])
+    if spec.get("time_limit"):
+        # Steps per episode: the wrapper's limit and the grid's own (MiniGrid truncates at 4*height*width otherwise).
+        options["env.time_limit"] = options["env.max_steps"] = spec["time_limit"]
     options.update({
         "env.task": task,
         "seed": args.seed,
@@ -212,6 +236,8 @@ def build(name, args):
         # Videos of the whole grid (large): one of every 10 training episodes of each source.
         options["trainer.video_render"] = True
         options["trainer.train_video_every"] = 10
+        if spec.get("tile"):
+            options["trainer.video_tile_size"] = spec["tile"]  # pixels per cell (default 16)
     for source, weight in mix.items():
         # Who plays the episodes of the replay buffer; the evaluations (and
         # episode/eval_score) always use the learned actor.
@@ -244,7 +270,10 @@ def build(name, args):
         "env.task": task, "trainer.random_policy": spec["random"], "model.train_actor_critic": True,
         "buffer.reward_slices": spec.get("reward_slices", 0), "model.act_entropy": spec.get("act_entropy", 3e-4),
         "env.steps": options["env.steps"], "seed": args.seed, "model.rep_loss": "dreamer",
+        "env.train_ratio": options["env.train_ratio"], "trainer.eval_every": options["trainer.eval_every"],
     }
+    if spec.get("time_limit"):
+        expected.update({"env.time_limit": spec["time_limit"], "env.max_steps": spec["time_limit"]})
     if spec.get("expert_view"):
         expected["env.expert_view"] = spec["expert_view"]
     if spec.get("obstacles"):

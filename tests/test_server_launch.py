@@ -64,11 +64,13 @@ def same(a, b):
 
 # exp3-obstaculos and the three runs made to contrast it: only Dreamer, 1M steps, videos of the whole grid.
 PAIRS = ("exp3-obstaculos", "exp3-sin-obstaculos", "exp4-obstaculos", "exp4-sin-obstaculos")
+# The same, on the original map (hallways of 11), with their own settings (see test_the_hall11_runs...).
+HALL11 = ("exp3-hall11-obstaculos", "exp3-hall11-sin-obstaculos")
 
 
 class LaunchTests(unittest.TestCase):
     def test_every_experiment_has_a_notebook_except_the_expert_run(self):
-        self.assertEqual(set(launch.EXPERIMENTS) - {"exp3-expert", "exp3-mix", "exp4-mix", "exp5-mix", *PAIRS, "local-expert"}, set(NOTEBOOKS))
+        self.assertEqual(set(launch.EXPERIMENTS) - {"exp3-expert", "exp3-mix", "exp4-mix", "exp5-mix", *PAIRS, *HALL11, "local-expert"}, set(NOTEBOOKS))
 
     def test_the_expert_run_is_the_random_run_with_the_expert_collecting(self):
         mine, expected, logdir, folder = launch.build("exp3-expert", args_for())
@@ -146,7 +148,7 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual((mine["trainer.video_render"], mine["trainer.train_video_every"]), ("True", "10"))
         self.assertEqual([mine[f"trainer.data_mix.{k}"] for k in ("actor", "random", "expert")], ["1", "1", "1"])
         for name in launch.EXPERIMENTS:
-            if name not in ("exp4-mix", "exp5-mix", *PAIRS):  # the runs with videos of the whole grid
+            if name not in ("exp4-mix", "exp5-mix", *PAIRS, *HALL11):  # the runs with videos of the whole grid
                 self.assertNotIn("trainer.video_render", as_dict(launch.build(name, args_for())[0]))
 
     def test_exp5_mix_is_exp4_mix_with_obstacles(self):
@@ -159,7 +161,7 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(differs, {"env.obstacles"})  # the only difference
         self.assertEqual(mine["env.obstacles"], "1")
         for name in launch.EXPERIMENTS:
-            if name not in ("exp5-mix", "exp3-obstaculos", "exp4-obstaculos"):  # the runs with obstacles
+            if name not in ("exp5-mix", "exp3-obstaculos", "exp4-obstaculos", "exp3-hall11-obstaculos"):  # the runs with obstacles
                 self.assertNotIn("env.obstacles", as_dict(launch.build(name, args_for())[0]))
 
     def test_exp3_obstaculos_is_only_dreamer_with_obstacles_and_a_5x5_view(self):
@@ -210,6 +212,45 @@ class LaunchTests(unittest.TestCase):
         self.assertNotIn("env.obstacles", expected5)
         self.assertEqual(expected3["env.obstacles"], 1)
         self.assertEqual(expected_sin3["env.task"], "cookie_partial_hall5_view3")
+
+    def test_the_hall11_runs_are_the_obstacle_pair_on_the_original_map_with_their_own_settings(self):
+        def build(name):
+            overrides, expected, logdir, folder = launch.build(name, args_for())
+            return as_dict(overrides), expected, folder
+
+        con, expected_con, folder_con = build("exp3-hall11-obstaculos")
+        sin, expected_sin, folder_sin = build("exp3-hall11-sin-obstaculos")
+        base, _, _ = build("exp3-obstaculos")
+        self.assertEqual((folder_con, folder_sin), ("cookie_partial_hall11_view5_s0_base_obstaculos", "cookie_partial_hall11_view5_s0_base_sin_obstaculos"))
+        self.assertEqual((con["env.task"], sin["env.task"]), ("cookie_partial_hall11_view5",) * 2)
+        # The two differ in the obstacles and nothing else.
+        self.assertEqual({k for k in set(con) | set(sin) if k != "logdir" and con.get(k) != sin.get(k)}, {"env.obstacles"})
+        self.assertEqual((con["env.obstacles"], sin.get("env.obstacles")), ("1", None))
+        # Next to exp3-obstaculos (hallways of 5): the map, the length of the run and of the episodes, and the settings
+        # that are different on purpose. The replay ratio is NOT one of them: 2M steps are already twice the updates.
+        differs = {k for k in set(con) | set(base) if k != "logdir" and con.get(k) != base.get(k)}
+        self.assertEqual(differs, {"env.task", "env.steps", "env.time_limit", "env.max_steps", "trainer.eval_every",
+                                   "model.act_entropy", "trainer.video_tile_size"})
+        self.assertEqual((con["env.steps"], con["env.time_limit"], con["env.max_steps"]), ("2000000", "3000", "3000"))
+        self.assertEqual((con["trainer.eval_every"], con["model.act_entropy"], con["trainer.video_tile_size"]), ("50000", "0.003", "8"))
+        self.assertEqual((con["env.train_ratio"], base["env.train_ratio"]), ("128", "128"))
+        self.assertEqual((base["env.time_limit"] if "env.time_limit" in base else None, "env.max_steps" in base), (None, False))
+        # Still only Dreamer collecting the data, the same buffer and videos.
+        for run in (con, sin):
+            self.assertEqual((run["trainer.random_policy"], run["buffer.max_size"], run["trainer.video_render"]), ("False", "500000", "True"))
+            self.assertFalse([k for k in run if k.startswith("trainer.data_mix") or k == "env.expert_view"])
+        self.assertEqual((expected_con["env.steps"], expected_con["env.time_limit"], expected_con["env.max_steps"]), (2_000_000, 3000, 3000))
+        self.assertEqual((expected_con["model.act_entropy"], expected_con["env.obstacles"]), (0.003, 1))
+        self.assertNotIn("env.obstacles", expected_sin)
+        # No other experiment changes the tile or the replay ratio, and hallways of 5 are still the default.
+        for name in launch.EXPERIMENTS:
+            overrides = as_dict(launch.build(name, args_for())[0])
+            if name not in HALL11:
+                self.assertEqual(overrides["env.train_ratio"], "128", name)
+                self.assertEqual(overrides["trainer.eval_every"], "25000", name)
+                self.assertNotIn("env.max_steps", overrides)
+                self.assertNotIn("trainer.video_tile_size", overrides)
+                self.assertIn("_hall5", overrides["env.task"])
 
     def test_local_run_fits_a_desktop_and_a_night(self):
         mine, expected, logdir, folder = launch.build("local-expert", args_for())

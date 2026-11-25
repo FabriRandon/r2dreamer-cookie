@@ -363,3 +363,91 @@ def test_obstacles_come_from_the_environment_config():
     finally:
         for env in envs.envs:
             env.close()
+
+
+# The original map of the game: hallways of 11 cells (a 29x18 grid, 2088-step episodes).
+def test_hallways_of_11_are_the_original_map_and_the_obstacles_fit_there():
+    from cookie_env.envs import ThreeRooms
+
+    env = Cookie("partial_hall11_view5", (64, 64), seed=0, obstacles=1)
+    env.reset()
+    inner = env._env.unwrapped
+    original = ThreeRooms(render_mode="rgb_array", max_steps=None)
+    original.reset()
+    assert (inner.width, inner.height) == (original.width, original.height) == (29, 18)
+    assert inner.max_steps == 2088 == original.max_steps
+    # Same walls and floor as the game's own map (the obstacles and the button aside).
+    for x, y in itertools.product(range(29), range(18)):
+        mine, theirs = inner.grid.get(x, y), original.grid.get(x, y)
+        if not isinstance(mine, Obstacle):
+            assert type(mine) is type(theirs), (x, y)
+    start = tuple(int(v) for v in inner.agent_pos)
+    assert start == tuple(int(v) for v in original.agent_pos)
+    assert [room for room, *_ in env._placed] == ["boton", "oeste", "este"]
+    corners = [(start[0] + dx, start[1] + dy) for dx in (-13, 13) for dy in (-2, 2)]  # where cookies appear
+    doors = {"boton": (start[0], start[1] - 9), "oeste": (start[0] - 9, start[1]), "este": (start[0] + 9, start[1])}
+    centres = {"boton": (start[0], start[1] - 11), "oeste": (start[0] - 11, start[1]), "este": (start[0] + 11, start[1])}
+    for _ in range(300):
+        env.reset()
+        reach = World.reach(type("W", (), dict(inner=inner, origin=start, rel=lambda self, c: c))())
+        assert all(corner in reach for corner in corners)
+        for room, cell, shape, colour in env._placed:
+            assert max(abs(cell[0] - centres[room][0]), abs(cell[1] - centres[room][1])) <= 2  # in its room
+            assert cell != doors[room] and cell not in corners
+        around = [(x + dx, y + dy) for x, y in [next((x, y) for x, y in itertools.product(range(29), range(18)) if type(inner.grid.get(x, y)).__name__ == "Button")] for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))]
+        assert any(c in reach for c in around)  # the button can be pressed
+
+
+def test_an_episode_on_hallways_of_11_lasts_2088_steps_with_and_without_obstacles():
+    rng = np.random.default_rng(0)
+    for obstacles in (0, 1):
+        env = Cookie("partial_hall11_view5", (64, 64), seed=1, obstacles=obstacles)
+        env.reset()
+        steps, done, bumps = 0, False, 0
+        while not done:
+            obs, reward, done, _ = env.step(int(rng.integers(3)))
+            steps += 1
+            bumps += obs.get("log_bumps", 0)
+        assert steps == 2088
+        assert ("log_bumps" in obs) == bool(obstacles)
+        assert (bumps > 0) == bool(obstacles)
+
+
+def test_the_episode_length_can_be_set_and_defaults_to_the_grids_own():
+    # None: MiniGrid's 4 * height * width (816 on hallways of 5, 2088 on 11), as in every earlier run.
+    for task, length in (("partial_hall5_view5", 816), ("partial_hall11_view5", 2088)):
+        assert Cookie(task, (64, 64), seed=0, max_steps=None)._env.unwrapped.max_steps == length
+    rng = np.random.default_rng(0)
+    env = Cookie("partial_hall11_view5", (64, 64), seed=0, obstacles=1, max_steps=3000)
+    env.reset()
+    steps, done = 0, False
+    while not done:
+        _, _, done, _ = env.step(int(rng.integers(3)))
+        steps += 1
+    assert steps == 3000
+
+
+def test_the_time_limit_and_max_steps_of_the_config_set_the_episode_of_a_run():
+    import torch
+    from omegaconf import OmegaConf
+
+    from envs import make_envs
+
+    def length(**options):
+        config = OmegaConf.create(dict(task="cookie_partial_hall11_view5", env_num=1, eval_episode_num=0, action_repeat=1,
+                                       press_on_move=True, seed=0, device="cpu", size=[64, 64], **options))
+        envs, _, _, _ = make_envs(config)
+        try:
+            envs.step(torch.zeros(1, 3), torch.ones(1, dtype=torch.bool))
+            for count in range(1, 4000):
+                _, done = envs.step(torch.nn.functional.one_hot(torch.randint(3, (1,)), 3).float(), torch.zeros(1, dtype=torch.bool))
+                if bool(done[0]):
+                    return count + 1  # the reset step above counted as the first
+        finally:
+            for env in envs.envs:
+                env.close()
+
+    assert abs(length(time_limit=3000, max_steps=3000) - 3000) <= 1
+    # Only raising the wrapper's limit does nothing: the grid truncates first, at 2088 (so max_steps is needed too).
+    assert abs(length(time_limit=3000) - 2088) <= 1
+    assert abs(length(time_limit=3000, max_steps=None) - 2088) <= 1

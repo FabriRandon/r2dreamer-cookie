@@ -24,6 +24,8 @@ Para ver **qué diferencia hacen** los obstáculos hay tres experimentos más, t
 python3 server/launch.py run exp3-sin-obstaculos exp4-obstaculos exp4-sin-obstaculos
 ```
 
+En el **mapa original** (pasillos de 11 casillas) hay otro par, `exp3-hall11-obstaculos` y `exp3-hall11-sin-obstaculos`, con parámetros propios: ver [`pasillos11.md`](pasillos11.md). Los obstáculos caen en las mismas salas de 5×5 y respetan las mismas reglas (puerta y esquinas libres, nada inalcanzable).
+
 ## Qué son
 
 - **Figuras:** estrella, rombo (alto), cuadrado, cruz «+» y equis «×».

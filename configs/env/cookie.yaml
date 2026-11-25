@@ -6,6 +6,10 @@ action_repeat: 1
 train_ratio: 512
 # MiniGrid's own default for this grid: 4 * height * width.
 time_limit: 2088
+# Steps per episode of the grid itself (MiniGrid truncates there, before time_limit does when it is shorter).
+# null: its own default, 4 * height * width (816 with hallways of 5, 2088 with 11). A number
+# (together with time_limit, which must not be smaller) makes the episodes that long.
+max_steps: null
 # Only turn and move; moving into the button presses it.
 press_on_move: True
 # Cells per side of the view the hand-written expert (trainer.data_mix.expert) decides

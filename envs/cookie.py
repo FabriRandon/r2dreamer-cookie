@@ -73,7 +73,7 @@ OBSTACLE_LOGS = ("bumps",)
 class Cookie(gym.Env):
     metadata = {}
 
-    def __init__(self, task, size=(64, 64), seed=0, press_on_move=True, expert_view=5, obstacles=0):
+    def __init__(self, task, size=(64, 64), seed=0, press_on_move=True, expert_view=5, obstacles=0, max_steps=None):
         from cookie_env.envs import ThreeRooms
         from cookie_env.objects import Button
         from cookie_env.utils import spawner
@@ -105,8 +105,9 @@ class Cookie(gym.Env):
                 options.update(height=height, width=width)
 
         # max_steps=None picks MiniGrid's 4 * height * width, the episode
-        # length the JAX runs used; ThreeRooms would default to 10_000.
-        env = rooms(render_mode="rgb_array", max_steps=None, **options)
+        # length the JAX runs used (816 steps with hallways of 5, 2088 with 11);
+        # ThreeRooms would default to 10_000. A number sets the length instead.
+        env = rooms(render_mode="rgb_array", max_steps=max_steps, **options)
         # ThreeRooms fixes the view at 3x3 when it builds MiniGrid, which reads
         # it again on every step.
         env.agent_view_size = view

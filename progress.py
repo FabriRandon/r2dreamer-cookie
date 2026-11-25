@@ -20,11 +20,12 @@ import re
 
 # Per-episode averages of a uniformly random agent with the 3 actions of
 # env.press_on_move, measured with envs/cookie.py (60 episodes of the full
-# map, 150 of the one with hallways of 5). Keyed by env.task with full vision;
+# map, 150 of the one with hallways of 5, 330 of the one with hallways of 11). Keyed by env.task with full vision;
 # see random_reference for the others.
 RANDOM = {
     "cookie_full": {"score": 0.02, "presses": 7.1, "cells": 51.0, "button_room": 448.0},
     "cookie_full_hall5": {"score": 0.05, "presses": 2.7, "cells": 38.0, "button_room": 155.0},
+    "cookie_full_hall11": {"score": 0.06, "presses": 6.2, "cells": 49.0, "button_room": 370.0},
 }
 # Step around which the JAX DreamerV3 run of the same task started to get
 # cookies. By 700k steps it got about 21 per episode.

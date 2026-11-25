@@ -182,6 +182,8 @@ python3 server/launch.py run all                    # todos menos local-expert (
 | `exp3-sin-obstaculos` | el **par** de `exp3-obstaculos`: exactamente igual (5×5, solo Dreamer, videos, 1.000.000 de pasos, misma semilla) pero **sin obstáculos**, para ver qué diferencia hacen. La carpeta es `..._view5_s0_base_sin_obstaculos` | 1.000.000 |
 | `exp4-obstaculos` | `exp3-obstaculos` con visión **3×3** (solo Dreamer, con obstáculos). La carpeta es `..._view3_s0_base_obstaculos` | 1.000.000 |
 | `exp4-sin-obstaculos` | el par de `exp4-obstaculos`: 3×3, solo Dreamer, **sin obstáculos**. La carpeta es `..._view3_s0_base_sin_obstaculos` | 1.000.000 |
+| `exp3-hall11-obstaculos` | el **mapa original** (pasillos de 11 en vez de 5: cuadrícula de 29×18), visión 5×5, **solo Dreamer**, con obstáculos. Con **ajustes propios** (2.000.000 de pasos, partidas de 3000 pasos, entropía 0,003, evaluación cada 50.000, videos a 8 px; el `train_ratio` sigue en 128; ver [`pasillos11.md`](pasillos11.md)). La carpeta es `..._hall11_view5_s0_base_obstaculos` | 2.000.000 |
+| `exp3-hall11-sin-obstaculos` | el par del anterior, sin obstáculos. La carpeta es `..._hall11_view5_s0_base_sin_obstaculos` | 2.000.000 |
 
 Son los pasos que dicen los notebooks (`exp3-expert` no tiene notebook: es la misma configuración de `exp3-random` cambiando quién recoge los datos); el README de `EXPERIMENTOS PRESENTACIÓN/` cuenta los pasos que finalmente se usaron en algunos runs. Cámbialos con `--steps N`.
 

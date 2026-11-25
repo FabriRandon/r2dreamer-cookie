@@ -38,6 +38,12 @@ class Run:
         return f"{match[1]}×{match[1]}" if match else ("Completa" if "full" in self.task else "?")
 
     @property
+    def hallway(self):
+        """Cells of each hallway of the map: 5 (the shortened one of most experiments) or 11 (the original)."""
+        match = re.search(r"_hall(\d+)", self.task)
+        return int(match[1]) if match else None
+
+    @property
     def sources(self):
         """Share of the training episodes played by each source: "actor" (Dreamer's
         policy), "random" and "expert". Runs from before trainer.data_mix existed
@@ -90,6 +96,8 @@ class Run:
             label += f" · {self.data_label}"
         if self.with_obstacles:
             label += " · con obstáculos"
+        if self.hallway == 11:
+            label += " · pasillos de 11"
         if seed not in (0, None):
             label += f" · semilla {seed}"
         return label
@@ -114,7 +122,8 @@ class Run:
         if self.data_label:
             data = f" Los episodios de entrenamiento: {self.data_label.replace('datos ', '', 1)}."
         obstacles = " Hay un obstáculo sólido en cada sala, distinto en cada partida." if self.with_obstacles else ""
-        return f"{view} {replay}{exploration}{data}{obstacles}"
+        hallway = " El mapa es el original, con pasillos de 11 casillas (la mayoría de los experimentos usa 5)." if self.hallway == 11 else ""
+        return f"{view} {replay}{exploration}{data}{obstacles}{hallway}"
 
     def points(self, key):
         return [(row["step"], row[key]) for row in self.rows if key in row]

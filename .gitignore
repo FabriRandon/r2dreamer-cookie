@@ -134,3 +134,9 @@ dmypy.json
 # IDE
 .vscode
 .clinerules
+
+# Archives (exported runs: server/export_run.sh makes .tar.gz files of hundreds of MB)
+*.tar
+*.tar.*
+*.tgz
+*.zip
