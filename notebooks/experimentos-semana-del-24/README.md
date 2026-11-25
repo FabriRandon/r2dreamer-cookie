@@ -6,6 +6,10 @@ Versiones nuevas de los experimentos con obstáculos de la semana del 19, con vi
 |---|---|---|
 | `vision_parcial_3x3_obstaculos_aleatorios.ipynb` | 3×3 | `MyDrive/galleta/semana24/obstaculos_aleatorios3x3/{modo}_s{semilla}` |
 | `vision_parcial_5x5_obstaculos_aleatorios.ipynb` | 5×5 | `MyDrive/galleta/semana24/obstaculos_aleatorios5x5/{modo}_s{semilla}` |
+| `vision_parcial_3x3_obstaculos_aleatorios_sampler1.ipynb` | 3×3 | `MyDrive/galleta/semana24/obstaculos_aleatorios3x3/{modo}_sampler1_s{semilla}` |
+| `vision_parcial_5x5_obstaculos_aleatorios_sampler1.ipynb` | 5×5 | `MyDrive/galleta/semana24/obstaculos_aleatorios5x5/{modo}_sampler1_s{semilla}` |
+
+Los notebooks `_sampler1` son iguales a los anteriores salvo `buffer.reward_slices=1`: de las 16 secuencias de cada batch, una se corta alrededor de un paso en que el actor comió una galleta, si ya hay alguna en el buffer. Su sección 6 compara cada condición con y sin sampler.
 
 Al comenzar cada episodio se sortea una casilla para cada figura, una por habitación lateral. En `distinct` también se sortea qué habitación recibe el triángulo y cuál el cuadrado. En `same` ambas figuras son cuadrados. Se mantienen quietas durante todo el episodio, incluso al pulsar de nuevo el botón o recoger galletas. Un sorteo puede repetir una ubicación anterior.
 
