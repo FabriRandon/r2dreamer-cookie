@@ -8,6 +8,8 @@ El notebook incorpora el entorno como parche contra una revisión fija del repos
 
 Entrenamiento: 500.000 pasos, semilla 0 por defecto, actor Dreamer, decoder, train ratio 128, imágenes RGB de 64×64 y evaluación cada 25.000 pasos con cinco partidas. Resultados propios en `MyDrive/galleta/semana25/tres_obstaculos_colores{5x5,3x3}/{modo}_sampler1_s{semilla}`. No retoma los checkpoints de dos obstáculos. La sección 6 compara con las métricas anteriores con sampler de la misma vista, leídas de su carpeta original. El número de obstáculos y los colores cambian a la vez; esta comparación no aísla sus efectos individuales.
 
+`vision_parcial_3x3_tres_obstaculos_colores.ipynb` es el mismo 3×3 sin `reward_slices` (`buffer.reward_slices=0`). Guarda en `MyDrive/galleta/semana25/tres_obstaculos_colores3x3/{modo}_s{semilla}` y su sección 6 lo compara con el 3×3 con `reward_slices`.
+
 Comprobación local desde la raíz del repositorio:
 
 ```bash
